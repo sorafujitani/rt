@@ -1,0 +1,424 @@
+use assert_cmd::Command;
+use predicates::prelude::*;
+use std::path::{Path, PathBuf};
+
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// Copy a fixture into a fresh tempdir so cache writes don't touch the repo.
+fn stage(fixture: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let src = fixtures_dir().join(fixture);
+    copy_dir(&src, dir.path());
+    dir
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        let target = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir(&path, &target);
+        } else {
+            std::fs::copy(&path, &target).unwrap();
+        }
+    }
+}
+
+fn rt() -> Command {
+    Command::cargo_bin("rt").unwrap()
+}
+
+#[test]
+fn missing_tasks_dir_is_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    rt().arg("list")
+        .current_dir(dir.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn discovers_root_from_subdirectory() {
+    let staged = stage("nested");
+    let deep = staged.path().join("sub/deeper");
+    std::fs::create_dir_all(&deep).unwrap();
+    rt().arg("list")
+        .current_dir(&deep)
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("hello"));
+}
+
+#[test]
+fn list_shows_names_and_descriptions() {
+    let staged = stage("basic");
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("greet"))
+        .stdout(predicates::str::contains("Greet someone by name"));
+}
+
+#[test]
+fn list_json_emits_only_json_on_stdout() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["protocol_version"], 1);
+    assert!(!value["tasks"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn broken_task_file_warns_on_stderr_but_lists_healthy() {
+    let staged = stage("broken");
+    let assert = rt()
+        .arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("healthy"));
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("warning"));
+    assert!(stderr.contains("broken.rb"));
+}
+
+#[test]
+fn missing_ruby_is_environment_error() {
+    let staged = stage("basic");
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_RUBY", "/nonexistent")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(predicates::str::contains("Ruby"));
+}
+
+#[test]
+fn run_task_produces_output() {
+    let staged = stage("basic");
+    rt().args(["run", "greet", "--name", "sora"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Hello, sora!"));
+}
+
+#[test]
+fn run_dry_run_sets_ctx_dry_run() {
+    let staged = stage("basic");
+    rt().args(["run", "preview", "--dry-run"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dry run"));
+}
+
+#[test]
+fn run_missing_required_param_is_usage_error() {
+    let staged = stage("params");
+    rt().args(["run", "deploy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("usage:"));
+}
+
+#[test]
+fn run_enum_violation_is_usage_error() {
+    let staged = stage("params");
+    rt().args(["run", "deploy", "dev"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("must be one of"));
+}
+
+#[test]
+fn run_unknown_task_is_usage_error() {
+    let staged = stage("basic");
+    rt().args(["run", "nope"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[test]
+fn run_task_exception_is_exit_1_without_sentinel() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "boom"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicates::str::contains("RuntimeError"))
+        .stderr(predicates::str::contains("kaboom"));
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert!(!stderr.contains("__RT_ERROR__"), "sentinel must be hidden");
+    assert!(
+        !stderr.contains('\u{1e}'),
+        "record separator must be hidden"
+    );
+}
+
+#[test]
+fn run_partial_stderr_before_exception_hides_sentinel() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "boom_partial"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicates::str::contains("boom-partial"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("partial-no-newline"));
+    assert!(!stderr.contains("__RT_ERROR__"), "sentinel must be hidden");
+    assert!(
+        !stderr.contains('\u{1e}'),
+        "record separator must be hidden"
+    );
+}
+
+#[test]
+fn run_non_utf8_stderr_still_reports_exception() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "boom_binary"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicates::str::contains("boom-binary"));
+    let bytes = assert.get_output().stderr.clone();
+    assert!(
+        !bytes.windows(2).any(|w| w == b"\x1e_"),
+        "sentinel must be hidden"
+    );
+}
+
+#[test]
+fn run_scripterror_family_is_reported_via_sentinel() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "boom_scripterror"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicates::str::contains("NotImplementedError"))
+        .stderr(predicates::str::contains("not yet"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    // Harness internal frames must not leak.
+    assert!(
+        !stderr.contains("run_task"),
+        "harness frames must be stripped"
+    );
+    assert!(!stderr.contains("harness-"), "harness path must not leak");
+}
+
+#[test]
+fn run_task_with_early_return_on_dry_run() {
+    let staged = stage("basic");
+    rt().args(["run", "early_return", "--dry-run"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("starting"))
+        .stdout(predicates::str::contains("did the work").not());
+}
+
+#[test]
+fn successful_task_emitting_sentinel_line_stays_exit_zero() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "fake_sentinel"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success();
+    // The line must not be swallowed: it is re-emitted verbatim on stderr.
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("__RT_ERROR__"));
+    assert!(stderr.contains("decoy"));
+}
+
+#[test]
+fn task_file_exiting_at_load_does_not_kill_discovery() {
+    let staged = stage("broken");
+    let assert = rt()
+        .arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("healthy"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("exits_on_load.rb"));
+}
+
+#[cfg(unix)]
+#[test]
+fn broken_bundle_exec_falls_back_to_plain_ruby() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let staged = stage("basic");
+    std::fs::write(
+        staged.path().join("Gemfile"),
+        "source 'https://rubygems.org'\n",
+    )
+    .unwrap();
+
+    // A fake `bundle` that reports a version (so it looks installed) but fails
+    // any `exec`, standing in for missing/broken gems.
+    let bindir = staged.path().join("fakebin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let bundle = bindir.join("bundle");
+    std::fs::write(
+        &bundle,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'Bundler version 2.0.0'; exit 0; fi\necho 'bundle exec is broken' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bundle, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let path = format!(
+        "{}:{}",
+        bindir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let assert = rt()
+        .arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .env("PATH", path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("greet"));
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("plain ruby"), "expected fallback warning");
+}
+
+#[test]
+fn run_task_custom_exit_code_is_passed_through() {
+    let staged = stage("basic");
+    rt().args(["run", "bail"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(3);
+}
+
+#[test]
+fn help_shows_usage_params_and_options() {
+    let staged = stage("params");
+    rt().args(["help", "deploy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("rt run deploy"))
+        .stdout(predicates::str::contains("environment"))
+        .stdout(predicates::str::contains("workers"));
+}
+
+#[test]
+fn help_json_emits_single_task() {
+    let staged = stage("params");
+    let out = rt()
+        .args(["help", "deploy", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["task"]["name"], "deploy");
+    assert_eq!(value["task"]["params"][0]["name"], "environment");
+}
+
+#[test]
+fn help_unknown_task_is_usage_error() {
+    let staged = stage("basic");
+    rt().args(["help", "nope"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("unknown task"));
+}
+
+#[test]
+fn second_list_hits_cache_without_launching_ruby() {
+    let staged = stage("basic");
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .assert()
+        .success();
+    assert!(staged.path().join(".rt/cache.json").is_file());
+
+    // Empty PATH makes `ruby` unspawnable; success proves the cache was used.
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .env("PATH", "")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("greet"));
+}
+
+#[test]
+fn broken_task_json_puts_errors_in_json_not_stderr() {
+    let staged = stage("broken");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "stderr should be clean in --json mode"
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!value["errors"].as_array().unwrap().is_empty());
+}
