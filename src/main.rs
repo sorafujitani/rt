@@ -8,6 +8,7 @@ mod project;
 mod ruby;
 mod run_result;
 mod runner;
+pub mod tool_catalog;
 
 use clap::Parser;
 use cli::{Cli, Command};

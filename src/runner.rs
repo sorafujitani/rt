@@ -435,3 +435,45 @@ fn join_control(
         .map(Some)
         .map_err(|e| RtError::Internal(format!("invalid task control message: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metadata::Task;
+    use crate::tool_catalog::ToolCatalog;
+
+    fn metadata(tasks: &[&str]) -> Metadata {
+        Metadata {
+            schema_version: METADATA_SCHEMA_VERSION,
+            tasks: tasks
+                .iter()
+                .map(|name| Task {
+                    name: (*name).to_string(),
+                    description: None,
+                    file: format!("tasks/{name}.rb"),
+                    params: Vec::new(),
+                    options: Vec::new(),
+                    gems: Vec::new(),
+                    source: Source::Project,
+                })
+                .collect(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn catalog_after_project_global_merge_is_unique_and_preserves_names() {
+        let merged = merge(
+            Some(metadata(&["deploy:prod/v1"])),
+            Some(metadata(&["deploy:prod/v1", "global:status"])),
+        );
+        let value = serde_json::to_value(ToolCatalog::from_metadata(&merged)).unwrap();
+
+        assert_eq!(value["tools"][0]["task"], "deploy:prod/v1");
+        assert_eq!(value["tools"][0]["source"], "project");
+        assert_eq!(value["tools"][1]["task"], "global:status");
+        assert_eq!(value["tools"][1]["source"], "global");
+        assert_eq!(value["tools"].as_array().unwrap().len(), 2);
+        assert_eq!(value["errors"][0]["class"], "ShadowedTask");
+    }
+}
