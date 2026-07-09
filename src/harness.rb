@@ -317,10 +317,11 @@ def install_gems(gems)
   summary = gems.map { |g| [g["name"], *g["requirements"]].join(" ").strip }.join(", ")
   warn "rt: resolving gems (#{summary})"
 
-  # Nothing may reach stdout (agents pipe task stdout to tools like jq), so any
-  # Bundler chatter is redirected to stderr for the duration of the install.
-  original = $stdout
-  $stdout = $stderr
+  # Nothing may reach stdout (agents pipe task stdout to tools like jq). Redirect
+  # fd 1 to stderr at the OS level, not just $stdout, so a native-extension build
+  # subprocess writing straight to fd 1 is captured too. Restored afterward.
+  saved = $stdout.dup
+  $stdout.reopen($stderr)
   begin
     gemfile(true, quiet: true) do
       source(ENV["RT_GEM_SOURCE"] || "https://rubygems.org")
@@ -333,7 +334,8 @@ def install_gems(gems)
     warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
     exit 74
   ensure
-    $stdout = original
+    $stdout.reopen(saved)
+    saved.close
   end
 end
 
