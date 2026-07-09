@@ -3,10 +3,10 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub const TOOL_CATALOG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const TOOL_CATALOG_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
-pub struct ToolCatalog {
+pub(crate) struct ToolCatalog {
     schema_version: u32,
     tools: Vec<ToolDefinition>,
     errors: Vec<LoadError>,
@@ -52,7 +52,7 @@ enum JsonType {
 }
 
 impl ToolCatalog {
-    pub fn from_metadata(metadata: &Metadata) -> Self {
+    pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
         Self {
             schema_version: TOOL_CATALOG_SCHEMA_VERSION,
             tools: metadata

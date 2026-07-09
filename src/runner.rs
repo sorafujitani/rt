@@ -6,6 +6,7 @@ use crate::output;
 use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
 use crate::run_result::{CapturedBytes, RunResult};
+use crate::tool_catalog::ToolCatalog;
 use command_fds::{CommandFdExt, FdMapping};
 use os_pipe::PipeReader;
 use serde_json::json;
@@ -136,6 +137,22 @@ pub fn help(roots: &Roots, task: &str, json: bool) -> Result<(), RtError> {
         };
         output::print_help(found, source_path);
     }
+    Ok(())
+}
+
+pub fn tools(roots: &Roots, task: Option<&str>) -> Result<(), RtError> {
+    let mut loaded = load_all(roots, false)?;
+    if let Some(task) = task {
+        if loaded.meta.find_task(task).is_none() {
+            return Err(unknown_task(&loaded.meta, task));
+        }
+        loaded.meta.tasks.retain(|candidate| candidate.name == task);
+    }
+
+    let catalog = ToolCatalog::from_metadata(&loaded.meta);
+    let text = serde_json::to_string_pretty(&catalog)
+        .map_err(|e| RtError::Internal(format!("cannot serialize tool catalog: {e}")))?;
+    println!("{text}");
     Ok(())
 }
 
