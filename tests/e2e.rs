@@ -31,10 +31,48 @@ fn copy_dir(src: &Path, dst: &Path) {
         let target = dst.join(entry.file_name());
         if path.is_dir() {
             copy_dir(&path, &target);
+        } else if is_rt_generated_file(&path) {
+            continue;
         } else {
             std::fs::copy(&path, &target).unwrap();
         }
     }
+}
+
+fn is_rt_generated_file(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if !parent.join("tasks").is_dir() {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    name == "cache.json"
+        || name == ".gitignore"
+        || name.ends_with(".tmp")
+        || (name.starts_with("harness-") && name.ends_with(".rb"))
+}
+
+#[test]
+fn fixture_copy_excludes_rt_generated_files() {
+    let src = tempfile::tempdir().unwrap();
+    let dst = tempfile::tempdir().unwrap();
+    let home = src.path().join(".rt");
+    std::fs::create_dir_all(home.join("tasks")).unwrap();
+    std::fs::write(home.join("tasks/greet.rb"), "task(\"greet\") {}\n").unwrap();
+    std::fs::write(home.join("cache.json"), "{}").unwrap();
+    std::fs::write(home.join("harness-deadbeef.rb"), "generated").unwrap();
+    std::fs::write(home.join(".gitignore"), "*\n").unwrap();
+
+    copy_dir(src.path(), dst.path());
+
+    assert!(dst.path().join(".rt/tasks/greet.rb").is_file());
+    assert!(!dst.path().join(".rt/cache.json").exists());
+    assert!(!dst.path().join(".rt/harness-deadbeef.rb").exists());
+    assert!(!dst.path().join(".rt/.gitignore").exists());
 }
 
 fn rt() -> Command {
@@ -733,6 +771,29 @@ fn second_list_hits_cache_without_launching_ruby() {
         .assert()
         .success()
         .stdout(predicates::str::contains("greet"));
+}
+
+#[test]
+fn cache_hit_still_rewrites_stale_gitignore() {
+    let staged = stage("basic");
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success();
+    std::fs::write(staged.path().join(".rt/.gitignore"), "*\n").unwrap();
+
+    // Empty PATH proves metadata comes from cache, while home maintenance must
+    // still run before the early return.
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("PATH", "")
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(staged.path().join(".rt/.gitignore")).unwrap();
+    assert_eq!(content, "/cache.json\n/harness-*.rb\n/*.tmp\n");
 }
 
 /// Assemble a self-contained offline gem source from the machine's cached rake
