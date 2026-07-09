@@ -59,8 +59,9 @@ end
 
 Rules:
 
-- `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`; use a string default so the type is consistent. `enum` restricts accepted values.
-- `option name, type:, default:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and only options are coerced to that type. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
+- `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`, so a non-null default must be a string. A required param cannot have a default. `enum` restricts accepted values.
+- `option name, type:, default:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
+- Param and option names must be unique and cannot overlap. `dry_run` and `dry-run` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
 - The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, and `ctx.say(message)`. A bare `return` is a valid early exit.
 - The task name is exactly what you declare. There is no automatic namespacing from file paths. Declaring the same name twice is an error.
 - Tasks cannot read interactive input from stdin. Pass everything as params and options.

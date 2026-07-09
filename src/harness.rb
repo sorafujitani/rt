@@ -19,6 +19,7 @@ ERROR_SENTINEL = "\x1e__RT_ERROR__"
 
 module RT
   OPTION_TYPES = %w[string integer boolean].freeze
+  RESERVED_ARGUMENT_NAMES = %w[dry-run dry_run].freeze
 
   class Task
     attr_reader :name, :description, :params, :options, :file, :block
@@ -42,10 +43,39 @@ module RT
         "gems" => RT.gems_for(@file)
       }
     end
+
+    def declaration_errors
+      errors = []
+      param_names = @params.map(&:name)
+      option_names = @options.map(&:name)
+
+      duplicate_names(param_names).each do |name|
+        errors << "duplicate param name #{name.inspect}"
+      end
+      duplicate_names(option_names).each do |name|
+        errors << "duplicate option name #{name.inspect}"
+      end
+      (param_names & option_names).each do |name|
+        errors << "name #{name.inspect} is used as both a param and an option"
+      end
+      ((param_names + option_names) & RESERVED_ARGUMENT_NAMES).each do |name|
+        errors << "name #{name.inspect} is reserved by rt"
+      end
+
+      @params.each { |param| errors.concat(param.declaration_errors) }
+      @options.each { |option| errors.concat(option.declaration_errors) }
+      errors
+    end
+
+    private
+
+    def duplicate_names(names)
+      names.group_by { |name| name }.select { |_name, values| values.length > 1 }.keys
+    end
   end
 
   class Param
-    attr_reader :name
+    attr_reader :name, :required, :default, :enum
 
     def initialize(name, required:, default:, enum:, description:)
       @name = name
@@ -53,6 +83,22 @@ module RT
       @default = default
       @enum = enum
       @description = description
+    end
+
+    def declaration_errors
+      errors = []
+      unless @required == true || @required == false
+        errors << "param #{@name.inspect} required must be true or false"
+      end
+      if @required && !@default.nil?
+        errors << "required param #{@name.inspect} cannot have a default"
+      elsif !@default.nil? && !@default.is_a?(String)
+        errors << "param #{@name.inspect} default must be a string"
+      end
+      if !@default.nil? && @enum && !@enum.include?(@default.to_s)
+        errors << "param #{@name.inspect} default must be one of: #{@enum.join(', ')}"
+      end
+      errors
     end
 
     def to_meta
@@ -67,13 +113,28 @@ module RT
   end
 
   class Option
-    attr_reader :name
+    attr_reader :name, :type, :default
 
     def initialize(name, type:, default:, description:)
       @name = name
       @type = type
       @default = default
       @description = description
+    end
+
+    def declaration_errors
+      unless OPTION_TYPES.include?(@type)
+        return ["option #{@name.inspect} has unknown option type #{@type.inspect}"]
+      end
+      return [] if @default.nil?
+
+      valid = case @type
+              when "string" then @default.is_a?(String)
+              when "integer" then @default.is_a?(Integer)
+              when "boolean" then @default == true || @default == false
+              end
+      expected = @type == "integer" ? "an integer" : "a #{@type}"
+      valid ? [] : ["option #{@name.inspect} default must be #{expected}"]
     end
 
     def to_meta
@@ -96,6 +157,15 @@ module RT
     end
 
     def add(task)
+      declaration_errors = task.declaration_errors
+      unless declaration_errors.empty?
+        record_error(
+          file: task.file,
+          klass: "InvalidDeclaration",
+          message: "task #{task.name.inspect}: #{declaration_errors.join('; ')}"
+        )
+        return
+      end
       if @by_name.key?(task.name)
         @errors << {
           "file" => task.file,
@@ -177,7 +247,6 @@ module RT
 
     def option(name, type: :string, default: nil, description: nil)
       t = type.to_s
-      t = "string" unless OPTION_TYPES.include?(t)
       RT.pending[:options] << Option.new(
         name.to_s,
         type: t,

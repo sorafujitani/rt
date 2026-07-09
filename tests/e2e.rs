@@ -1372,3 +1372,56 @@ fn broken_task_json_puts_errors_in_json_not_stderr() {
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(!value["errors"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn invalid_declarations_are_structured_load_errors() {
+    let staged = stage("invalid");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tasks = value["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["name"], "healthy");
+
+    let errors = value["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 11);
+    assert!(errors
+        .iter()
+        .all(|error| error["class"] == "InvalidDeclaration"));
+    let messages: Vec<&str> = errors
+        .iter()
+        .map(|error| error["message"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "duplicate param name",
+        "duplicate option name",
+        "used as both a param and an option",
+        "reserved by rt",
+        "unknown option type",
+        "default must be an integer",
+        "default must be a boolean",
+        "default must be a string",
+        "default must be one of",
+        "required must be true or false",
+        "cannot have a default",
+    ] {
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "missing declaration error containing {expected:?}: {messages:?}"
+        );
+    }
+
+    rt().args(["run", "healthy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout("ok\n");
+}

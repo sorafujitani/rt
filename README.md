@@ -97,12 +97,16 @@ end
 
 - `param name, required:, default:, enum:, description:` — a positional
   argument. `enum` restricts the accepted values. A value supplied on the
-  command line always reaches the task as a `String`; prefer a string `default`
-  too, so the type is consistent whether or not the argument was given.
+  command line always reaches the task as a `String`, so a non-null `default`
+  must also be a string. A required param cannot have a default.
 - `option name, type:, default:, description:` — a `--flag`. `type` is one of
   `:string`, `:integer`, `:boolean`. Boolean options are set by presence
   (`--force`) or explicitly (`--force=false`). Only options carry a `type` and
   are coerced accordingly (integers become integers, booleans become booleans).
+- Param and option names must be unique within a task and cannot overlap.
+  `dry_run` and `dry-run` are reserved by rt. Option defaults must match their
+  declared type. Invalid declarations are reported as `InvalidDeclaration`
+  load errors and the invalid task is not registered.
 - The block receives a context: `ctx.param(:name)`, `ctx.option(:name)`,
   `ctx.dry_run?`, and `ctx.say(message)` for output. A bare `return` inside a
   task body is a valid early exit.
