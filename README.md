@@ -7,8 +7,8 @@ validation, machine-readable metadata, and a dry-run mode.
 
 rt is not tied to Ruby projects. As long as a Ruby interpreter is on the
 machine, rt works in Go, TypeScript, or any other repository — or in no
-repository at all. Task definitions live in a `tasks/` directory and are plain
-Ruby using only the standard library.
+repository at all. Task definitions live in a `.rt/tasks/` directory and are
+plain Ruby using only the standard library.
 
 ## Requirements
 
@@ -43,10 +43,10 @@ npx skills add sorafujitani/rt
 
 ## Getting started
 
-Create a `tasks/` directory in your project and add a task file:
+Create a `.rt/tasks/` directory in your project and add a task file:
 
 ```ruby
-# tasks/greet.rb
+# .rt/tasks/greet.rb
 desc "Greet someone by name"
 option :name, type: :string, default: "world", description: "who to greet"
 task "greet" do |ctx|
@@ -74,12 +74,13 @@ Hello, sora!
 ```
 
 rt finds your project by walking up from the current directory looking for a
-`tasks/` directory (or an `rt.yml` file). Set `RT_ROOT` to override discovery.
+`.rt/` directory. Set `RT_ROOT` to the directory containing `.rt/` to override
+discovery.
 
 ## Writing tasks
 
-Task files are loaded from `tasks/**/*.rb`. The DSL uses a pending-buffer model
-like Rake: `desc`, `param`, and `option` describe the next `task`.
+Task files are loaded from `.rt/tasks/**/*.rb`. The DSL uses a pending-buffer
+model like Rake: `desc`, `param`, and `option` describe the next `task`.
 
 ```ruby
 desc "Deploy the application to an environment"
@@ -118,7 +119,7 @@ them with `bundler/inline` just before the task runs, so a task can depend on a
 gem without the project having a `Gemfile`.
 
 ```ruby
-# tasks/gh-release.rb
+# .rt/tasks/gh-release.rb
 gem "octokit", "~> 8.0"
 
 desc "Create a GitHub release"
@@ -181,7 +182,7 @@ reported in the JSON `errors` array rather than on stderr.
 
 ## Global tasks
 
-Besides a project's `tasks/`, rt also loads machine-wide tasks from a config
+Besides a project's `.rt/tasks/`, rt also loads machine-wide tasks from a config
 directory, so you can carry personal tasks across every repository — or use rt
 with no project at all. Put task files in `<config_dir>/tasks/`, where
 `config_dir` is resolved in this order:
@@ -191,7 +192,8 @@ with no project at all. Put task files in `<config_dir>/tasks/`, where
 3. `~/.config/rt`.
 
 Global tasks work the same as project tasks, and get their own cache and
-harness under `<config_dir>/.rt/`.
+harness directly under `<config_dir>/`. The config dir has the same shape as a
+project's `.rt/` directory.
 
 A word on trust: the top level of every task file runs during discovery, on
 *every* rt invocation (`list`, `help`, and `run`) from any directory. Because
@@ -226,7 +228,9 @@ rt resolves Ruby in this order:
    example `/usr/bin/ruby` or a `ruby-install` shim). It is not a shell command
    line — compound values like `"bundle exec ruby"` are not supported.
 2. `bundle exec ruby` (with `BUNDLE_GEMFILE` set) when a `Gemfile` is present
-   and `bundle` is on `PATH`.
+   and `bundle` is on `PATH`. The `Gemfile` is looked up first inside the task
+   home (`.rt/Gemfile`, or `<config_dir>/Gemfile` for global tasks) and then at
+   the project root.
 3. `ruby` on `PATH`.
 
 If a `Gemfile` is present but `bundle` is not installed, rt warns and falls
@@ -249,13 +253,32 @@ fighting an active `bundle exec`.
 
 ## Caching
 
-Discovered metadata is cached in `.rt/cache.json`, keyed on each task file's
-size and modification time (seconds and nanoseconds) plus the resolved Ruby
-command. Size is part of the key because some filesystems only report
-one-second mtime resolution, where a same-second edit could otherwise be
-missed. rt regenerates the cache when a task file changes, the file set
-changes, or the Ruby command changes. The `.rt/` directory is git-ignored
-automatically. Deleting it is always safe.
+Discovered metadata is cached in `cache.json` next to the tasks
+(`.rt/cache.json` in a project, `<config_dir>/cache.json` for global tasks),
+keyed on each task file's size and modification time (seconds and nanoseconds)
+plus the resolved Ruby command. Size is part of the key because some
+filesystems only report one-second mtime resolution, where a same-second edit
+could otherwise be missed. rt regenerates the cache when a task file changes,
+the file set changes, or the Ruby command changes. rt writes a `.gitignore`
+into the home — `.rt/` in a project, the config dir itself for global tasks —
+with patterns anchored to cover only its generated files (cache and harness),
+so `tasks/` stays versioned. Deleting the generated files is always safe.
+
+## Migrating from the old layout
+
+rt 0.0.2 and earlier read project tasks from a top-level `tasks/` directory,
+with `rt.yml` as an optional root marker. To migrate a project:
+
+1. Move the tasks: `mkdir -p .rt && git mv tasks .rt/tasks`. Delete `rt.yml`
+   if present.
+2. The old auto-generated `.rt/.gitignore` contained `*`; rt rewrites it with
+   the new anchored patterns on the next run, so `.rt/tasks/` becomes visible
+   to git.
+3. In repositories that no longer use rt, delete any leftover `.rt/` directory
+   (old cache and harness): its presence alone now marks the directory above
+   it as an rt project.
+
+Global tasks under `<config_dir>/tasks/` need no migration.
 
 ## Limitations
 

@@ -99,25 +99,24 @@ fn file_meta(path: &Path) -> Result<FileMeta, RtError> {
 
 /// Corrupt or unreadable caches are silently discarded.
 fn read(root: &Path) -> Option<Cache> {
-    let path = root.join(".rt/cache.json");
+    let path = root.join("cache.json");
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
 /// Best-effort atomic write via a temp file + rename.
 fn write(root: &Path, cache: &Cache) {
-    let rt_dir = root.join(".rt");
-    if std::fs::create_dir_all(&rt_dir).is_err() {
+    if std::fs::create_dir_all(root).is_err() {
         return;
     }
     let Ok(json) = serde_json::to_vec(cache) else {
         return;
     };
-    let tmp = rt_dir.join(format!("cache.json.{}.tmp", std::process::id()));
+    let tmp = root.join(format!("cache.json.{}.tmp", std::process::id()));
     if std::fs::write(&tmp, &json).is_err() {
         return;
     }
-    let _ = std::fs::rename(&tmp, rt_dir.join("cache.json"));
+    let _ = std::fs::rename(&tmp, root.join("cache.json"));
 }
 
 #[cfg(test)]

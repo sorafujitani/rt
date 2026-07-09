@@ -46,7 +46,7 @@ fn rt() -> Command {
 }
 
 #[test]
-fn missing_tasks_dir_is_usage_error() {
+fn missing_rt_dir_is_usage_error() {
     let dir = tempfile::tempdir().unwrap();
     rt().arg("list")
         .current_dir(dir.path())
@@ -54,6 +54,20 @@ fn missing_tasks_dir_is_usage_error() {
         .assert()
         .failure()
         .code(2);
+}
+
+#[test]
+fn plain_tasks_dir_without_rt_dir_is_not_a_project() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("tasks")).unwrap();
+    std::fs::write(dir.path().join("tasks/x.rb"), "task(\"x\") {}\n").unwrap();
+    rt().arg("list")
+        .current_dir(dir.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains(".rt/"));
 }
 
 #[test]
@@ -410,6 +424,52 @@ fn help_unknown_task_is_usage_error() {
         .failure()
         .code(2)
         .stderr(predicates::str::contains("unknown task"));
+}
+
+#[test]
+fn generated_gitignore_anchors_patterns_to_the_home() {
+    let staged = stage("basic");
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(staged.path().join(".rt/.gitignore")).unwrap();
+    // Unanchored patterns would recursively ignore files under tasks/ too
+    // (e.g. tasks/harness-deploy.rb).
+    assert_eq!(content, "/cache.json\n/harness-*.rb\n/*.tmp\n");
+}
+
+#[test]
+fn stale_wildcard_gitignore_is_rewritten() {
+    let staged = stage("basic");
+    // Older rt versions wrote `*` when the home held only generated files; left
+    // alone it would keep .rt/tasks/ invisible to git.
+    std::fs::write(staged.path().join(".rt/.gitignore"), "*\n").unwrap();
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(staged.path().join(".rt/.gitignore")).unwrap();
+    assert_eq!(content, "/cache.json\n/harness-*.rb\n/*.tmp\n");
+}
+
+#[test]
+fn user_edited_gitignore_is_preserved() {
+    let staged = stage("basic");
+    std::fs::write(
+        staged.path().join(".rt/.gitignore"),
+        "/cache.json\n/my-scratch/\n",
+    )
+    .unwrap();
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success();
+    let content = std::fs::read_to_string(staged.path().join(".rt/.gitignore")).unwrap();
+    assert_eq!(content, "/cache.json\n/my-scratch/\n");
 }
 
 #[test]
@@ -809,13 +869,13 @@ fn global_tasks_list_and_run_outside_any_project() {
         .success()
         .stdout(predicates::str::contains("Source: global ("));
 
-    // The global root keeps its own cache/harness under <config_dir>/.rt.
-    assert!(global.path().join(".rt/cache.json").is_file());
-    let harness = std::fs::read_dir(global.path().join(".rt"))
+    // The global home keeps its own cache/harness directly under <config_dir>.
+    assert!(global.path().join("cache.json").is_file());
+    let harness = std::fs::read_dir(global.path())
         .unwrap()
         .filter_map(Result::ok)
         .any(|e| e.file_name().to_string_lossy().starts_with("harness-"));
-    assert!(harness, "global harness should live under <config_dir>/.rt");
+    assert!(harness, "global harness should live under <config_dir>");
 }
 
 #[test]

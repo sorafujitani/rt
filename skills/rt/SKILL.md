@@ -1,6 +1,6 @@
 ---
 name: rt
-description: Discover, run, and author rt tasks. rt turns Ruby scripts in a tasks/ directory into a CLI with help, validation, JSON metadata, and dry-run. Use when a repo contains a tasks/ directory or rt.yml, when asked to list or run rt tasks, or when asked to automate something with rt.
+description: Discover, run, and author rt tasks. rt turns Ruby scripts in a .rt/tasks/ directory into a CLI with help, validation, JSON metadata, and dry-run. Use when a repo contains a .rt/ directory, when asked to list or run rt tasks, or when asked to automate something with rt.
 license: MIT
 ---
 
@@ -8,7 +8,7 @@ license: MIT
 
 rt turns ordinary Ruby scripts into a discoverable command-line tool for humans and agents. Tasks are described in a small Ruby DSL with names, descriptions, typed params and options, and rt provides help, validation, machine-readable metadata, and a dry-run mode. It works in any repository (Go, TypeScript, anything) as long as a Ruby interpreter is available.
 
-Detect rt in a repo by the presence of a `tasks/` directory or an `rt.yml` file. rt finds the project by walking up from the current directory; `RT_ROOT` overrides discovery.
+Detect rt in a repo by the presence of a `.rt/` directory. rt finds the project by walking up from the current directory; `RT_ROOT` (the directory containing `.rt/`) overrides discovery.
 
 ## Discover and run tasks
 
@@ -32,10 +32,10 @@ The exact JSON shapes, the full environment-variable table, and project layout d
 
 ## Author tasks
 
-Put task files in `tasks/` (loaded from `tasks/**/*.rb`). The DSL uses a pending-buffer model like Rake. `desc`, `param`, and `option` describe the next `task` declaration. Copy this template:
+Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). The DSL uses a pending-buffer model like Rake. `desc`, `param`, and `option` describe the next `task` declaration. Copy this template:
 
 ```ruby
-# tasks/gh-release.rb
+# .rt/tasks/gh-release.rb
 gem "octokit", "~> 8.0"
 
 desc "Create a GitHub release"
@@ -91,7 +91,7 @@ Trust caveat: the top level of every task file executes during discovery on ever
 rt picks a Ruby in this order:
 
 1. `RT_RUBY`, if set. A path to a single Ruby executable, not a shell command line.
-2. `bundle exec ruby` when a `Gemfile` is present and `bundle` is on `PATH`.
+2. `bundle exec ruby` when a `Gemfile` is present (in `.rt/`, or at the project root) and `bundle` is on `PATH`.
 3. `ruby` on `PATH`.
 
 If Bundler is missing or `bundle exec` fails, rt warns and falls back to plain `ruby`. Tasks that declare gems always run under plain Ruby regardless of a `Gemfile`. rt strips `RUBYOPT` and `RUBYLIB` from every Ruby it launches.

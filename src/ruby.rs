@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::Metadata;
+use crate::metadata::{Metadata, Source};
 use crate::output;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -25,7 +25,7 @@ impl RubyCommand {
     /// Resolution order: RT_RUBY -> `bundle exec ruby` (if a Gemfile and
     /// bundle exist) -> plain `ruby` on PATH. `warn` is false in --json mode so
     /// the fallback notice never pollutes stdout's JSON companion, stderr.
-    pub fn resolve(root: &Path, warn: bool) -> Self {
+    pub fn resolve(root: &Path, source: Source, warn: bool) -> Self {
         if let Some(explicit) = std::env::var_os("RT_RUBY") {
             return RubyCommand {
                 program: explicit.to_string_lossy().into_owned(),
@@ -35,8 +35,7 @@ impl RubyCommand {
             };
         }
 
-        let gemfile = root.join("Gemfile");
-        if gemfile.is_file() {
+        if let Some(gemfile) = find_gemfile(root, source) {
             if bundle_available() {
                 return RubyCommand {
                     program: "bundle".to_string(),
@@ -142,6 +141,21 @@ impl RubyCommand {
     }
 }
 
+/// A Gemfile inside the home itself wins as the more specific location. Only a
+/// project home also checks its parent (the repo root, where a project's bundle
+/// usually lives); the global home's parent (e.g. ~/.config) is not a project
+/// root and must never be consulted.
+fn find_gemfile(root: &Path, source: Source) -> Option<PathBuf> {
+    let parent = match source {
+        Source::Project => root.parent().map(|p| p.join("Gemfile")),
+        Source::Global => None,
+    };
+    [Some(root.join("Gemfile")), parent]
+        .into_iter()
+        .flatten()
+        .find(|g| g.is_file())
+}
+
 fn bundle_available() -> bool {
     Command::new("bundle")
         .arg("--version")
@@ -152,24 +166,31 @@ fn bundle_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Materialize the embedded harness at `.rt/harness-<hash>.rb`, writing only
-/// when the content differs. Returns the path.
+/// Materialize the embedded harness at `<home>/harness-<hash>.rb`, writing
+/// only when the content differs. Returns the path.
 pub fn ensure_harness(root: &Path) -> Result<PathBuf, RtError> {
-    let rt_dir = root.join(".rt");
-    std::fs::create_dir_all(&rt_dir)
-        .map_err(|e| RtError::Internal(format!("cannot create .rt directory: {e}")))?;
+    std::fs::create_dir_all(root)
+        .map_err(|e| RtError::Internal(format!("cannot create rt home directory: {e}")))?;
 
-    let gitignore = rt_dir.join(".gitignore");
-    if !gitignore.exists() {
-        let _ = std::fs::write(&gitignore, "*\n");
+    // The home also holds tasks/ (versioned), so only rt's generated files may
+    // be ignored, anchored to the home so nothing under tasks/ ever matches.
+    // Older rt versions wrote a blanket `*` here (the home was generated-only
+    // back then); left in place it would keep tasks/ invisible to git, so it is
+    // rewritten. Any other user-edited content is preserved.
+    let gitignore = root.join(".gitignore");
+    let stale = std::fs::read_to_string(&gitignore)
+        .map(|content| content.trim() == "*")
+        .unwrap_or(true);
+    if stale {
+        let _ = std::fs::write(&gitignore, "/cache.json\n/harness-*.rb\n/*.tmp\n");
     }
 
     let mut hasher = DefaultHasher::new();
     HARNESS.hash(&mut hasher);
     let hash = hasher.finish();
-    let path = rt_dir.join(format!("harness-{hash:016x}.rb"));
+    let path = root.join(format!("harness-{hash:016x}.rb"));
     if !path.exists() {
-        let tmp = rt_dir.join(format!("harness-{hash:016x}.rb.{}.tmp", std::process::id()));
+        let tmp = root.join(format!("harness-{hash:016x}.rb.{}.tmp", std::process::id()));
         std::fs::write(&tmp, HARNESS)
             .map_err(|e| RtError::Internal(format!("cannot write harness: {e}")))?;
         std::fs::rename(&tmp, &path)

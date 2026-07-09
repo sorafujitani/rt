@@ -51,7 +51,7 @@ Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in t
 
 | variable | effect |
 |---|---|
-| `RT_ROOT` | skip upward project discovery, use this directory as the project root |
+| `RT_ROOT` | skip upward project discovery, use this directory (which must contain `.rt/`) as the project root |
 | `RT_RUBY` | path to a single Ruby executable (no shell strings like `"bundle exec ruby"`) |
 | `RT_CONFIG_DIR` | global tasks location (default `$XDG_CONFIG_HOME/rt`, then `~/.config/rt`) |
 | `RT_GEM_HOME` | base dir for the isolated inline-gem cache (default `$XDG_CACHE_HOME/rt/gems`, then `~/.cache/rt/gems`) |
@@ -78,9 +78,10 @@ end
 ## Project layout
 
 ```
-tasks/            # task files, discovered recursively
-rt.yml            # optional project root marker
-.rt/              # cache and harness (auto-generated, gitignored)
+.rt/
+  tasks/          # task files, discovered recursively (versioned)
+  cache.json      # metadata cache (auto-generated, gitignored)
+  harness-*.rb    # Ruby harness (auto-generated, gitignored)
 ```
 
-Root discovery walks upward from the working directory until it finds `tasks/` or `rt.yml`. Without a project, global tasks from `RT_CONFIG_DIR` still work.
+Root discovery walks upward from the working directory until it finds a `.rt/` directory. The global config dir (`RT_CONFIG_DIR`, default `~/.config/rt`) has the same shape as `.rt/`: `tasks/`, `cache.json`, and the harness live directly under it. Without a project, global tasks still work.
