@@ -92,7 +92,7 @@ fn list_json_emits_only_json_on_stdout() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["protocol_version"], 2);
     assert!(!value["tasks"].as_array().unwrap().is_empty());
 }
 
@@ -379,7 +379,7 @@ fn help_json_emits_single_task() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["protocol_version"], 2);
     assert_eq!(value["task"]["name"], "deploy");
     assert_eq!(value["task"]["params"][0]["name"], "environment");
 }

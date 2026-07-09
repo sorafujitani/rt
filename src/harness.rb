@@ -12,7 +12,7 @@
 require "json"
 require "stringio"
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 ERROR_SENTINEL = "\x1e__RT_ERROR__"
 
 module RT
@@ -36,7 +36,8 @@ module RT
         "description" => @description,
         "file" => @file,
         "params" => @params.map(&:to_meta),
-        "options" => @options.map(&:to_meta)
+        "options" => @options.map(&:to_meta),
+        "gems" => RT.gems_for(@file)
       }
     end
   end
@@ -151,6 +152,17 @@ module RT
       RT.pending[:description] = text
     end
 
+    # Declared at the top level of a task file; scoped to that file. On the
+    # top-level object this shadows Kernel#gem, but task blocks run on a fresh
+    # object where Kernel#gem is visible again, so declarations are structurally
+    # limited to file scope.
+    def gem(name, *requirements)
+      RT.file_gems[RT.current_file] << {
+        "name" => name.to_s,
+        "requirements" => requirements.map(&:to_s)
+      }
+    end
+
     def param(name, required: false, default: nil, enum: nil, description: nil)
       RT.pending[:params] << Param.new(
         name.to_s,
@@ -194,6 +206,14 @@ module RT
 
     def pending
       @pending ||= fresh_pending
+    end
+
+    def file_gems
+      @file_gems ||= Hash.new { |h, k| h[k] = [] }
+    end
+
+    def gems_for(file)
+      file_gems.fetch(file, [])
     end
 
     def consume_pending
