@@ -11,6 +11,8 @@
 
 require "json"
 require "stringio"
+require "fileutils"
+require "rbconfig"
 
 PROTOCOL_VERSION = 2
 ERROR_SENTINEL = "\x1e__RT_ERROR__"
@@ -301,8 +303,42 @@ end
 # runs. Nothing may reach stdout (agents pipe task stdout to tools like jq), so
 # any Bundler chatter is redirected to stderr. Install failure is an
 # environment error (exit 74), matching rt's exit-code contract.
+# Redirect gem installs into a per-ABI cache dir instead of the default gem
+# environment, which on macOS system Ruby is unwritable without sudo. Built
+# before requiring bundler/inline so bundler resolves against the isolated
+# paths. Native extensions are ABI-specific, so the dir is keyed on engine +
+# ruby_version. GEM_PATH is set explicitly (isolated home + Ruby's default dir):
+# with only GEM_HOME set, rubygems' PathSupport re-adds the user gem dir and the
+# ambient environment leaks back in. default_dir supplies Ruby's bundled/default
+# gems (bundler, rake) and must be read before ENV is mutated.
+def isolate_gem_home
+  configured = ENV["RT_GEM_HOME"]
+  configured = nil if configured.nil? || configured.strip.empty?
+  base = configured || File.join(cache_home, "rt", "gems")
+  home = File.join(base, "#{RUBY_ENGINE}-#{RbConfig::CONFIG["ruby_version"]}")
+
+  default_dir = Gem.default_dir
+  begin
+    FileUtils.mkdir_p(home)
+  rescue SystemCallError => e
+    warn "rt: cannot create gem cache dir #{home}: #{e.message}"
+    exit 74
+  end
+
+  ENV["GEM_HOME"] = home
+  ENV["GEM_PATH"] = [home, default_dir].join(File::PATH_SEPARATOR)
+  Gem.clear_paths
+end
+
+def cache_home
+  xdg = ENV["XDG_CACHE_HOME"]
+  xdg.nil? || xdg.strip.empty? ? File.join(Dir.home, ".cache") : xdg
+end
+
 def install_gems(gems)
   return if gems.nil? || gems.empty?
+
+  isolate_gem_home
 
   # Require bundler/inline before the main rescue so its absence (a broken Ruby)
   # is reported as exit 74 rather than raising a NameError when the rescue tries
