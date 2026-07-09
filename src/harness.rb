@@ -14,8 +14,8 @@ require "stringio"
 require "fileutils"
 require "rbconfig"
 
-HARNESS_PROTOCOL_VERSION = 1
-ERROR_SENTINEL = "\x1e__RT_ERROR__"
+HARNESS_PROTOCOL_VERSION = 2
+CONTROL_FD_ENV = "RT_CONTROL_FD"
 
 module RT
   OPTION_TYPES = %w[string integer boolean].freeze
@@ -460,6 +460,11 @@ def install_gems(gems)
 end
 
 def run_task(root, name)
+  control_fd = ENV.delete(CONTROL_FD_ENV)
+  abort "rt: missing task control fd" if control_fd.nil?
+  control = IO.for_fd(Integer(control_fd), "w", autoclose: false)
+  control.close_on_exec = true
+
   input = $stdin.read
   args = input.empty? ? {} : JSON.parse(input)
   params = args["params"] || {}
@@ -491,7 +496,8 @@ def run_task(root, name)
       "message" => e.message,
       "backtrace" => clean_backtrace(root, e.backtrace)
     }
-    $stderr.puts("#{ERROR_SENTINEL} #{JSON.generate(payload)}")
+    control.write(JSON.generate(payload))
+    control.flush
     exit 1
   end
 end

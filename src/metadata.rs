@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const METADATA_SCHEMA_VERSION: u32 = 2;
 
 /// Version of the private Rust/Ruby harness wire contract.
-pub const HARNESS_PROTOCOL_VERSION: u32 = 1;
+pub const HARNESS_PROTOCOL_VERSION: u32 = 2;
 
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.

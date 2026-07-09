@@ -6,13 +6,16 @@ use crate::output;
 use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
 use crate::run_result::RunResult;
+use command_fds::{CommandFdExt, FdMapping};
+use os_pipe::PipeReader;
 use serde_json::json;
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
-const ERROR_SENTINEL: &[u8] = b"\x1e__RT_ERROR__";
+const CONTROL_FD: i32 = 3;
+const CONTROL_FD_ENV: &str = "RT_CONTROL_FD";
 
 /// Metadata merged across roots, plus the interpreter that produced each root's
 /// metadata (needed to run a task with the same Ruby that discovered it).
@@ -226,19 +229,18 @@ pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), Rt
     let ruby = prepared.ruby;
 
     let harness = ruby::ensure_harness(root)?;
-    let mut child = ruby
-        .command(&harness)
+    let (mut command, control) = task_command(&ruby, &harness)?;
+    let mut child = command
         .arg("--run")
         .arg(root)
         .arg(task_name)
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| ruby::environment_error(&ruby, &e))?;
-
-    let stderr = child.stderr.take().expect("stderr piped");
-    let tee = std::thread::spawn(move || tee_stderr(stderr));
+    drop(command);
+    let control_reader = std::thread::spawn(move || read_all(control));
 
     if let Some(mut stdin) = child.stdin.take() {
         // A BrokenPipe here just means the task never read stdin.
@@ -248,20 +250,10 @@ pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), Rt
     let status = child
         .wait()
         .map_err(|e| RtError::Internal(format!("failed to wait for task: {e}")))?;
-    let captured = tee.join().unwrap_or(None);
-    let succeeded = status.code() == Some(0);
+    let failure = join_control(control_reader)?;
 
-    // Only treat the sentinel as a real failure when the task actually failed.
-    // A task that exits 0 while happening to print a sentinel-shaped line is a
-    // success; re-emit the withheld line so nothing is silently swallowed.
-    if let Some(cap) = captured {
-        if !succeeded {
-            if let Some(failure) = cap.failure {
-                return Err(RtError::Task(failure));
-            }
-        }
-        let mut err = std::io::stderr();
-        let _ = err.write_all(&cap.raw);
+    if let Some(failure) = failure {
+        return Err(RtError::Task(failure));
     }
 
     match status.code() {
@@ -291,32 +283,27 @@ pub fn run_json(roots: &Roots, task_name: &str, raw_args: &[String]) -> RunResul
             let CapturedRun {
                 code,
                 stdout,
-                mut stderr,
-                captured_error,
+                stderr,
+                failure,
             } = captured;
 
-            match code {
-                Some(0) => {
-                    if let Some(error) = captured_error {
-                        stderr.extend(error.raw);
-                    }
-                    RunResult::success(task_name, stdout, stderr, load_errors)
-                }
-                Some(code) => {
-                    let error = match captured_error {
-                        Some(Captured {
-                            failure: Some(failure),
-                            ..
-                        }) => RtError::Task(failure),
-                        Some(Captured { failure: None, raw }) => {
-                            stderr.extend(raw);
-                            RtError::TaskExit(code)
-                        }
-                        None => RtError::TaskExit(code),
-                    };
-                    RunResult::error(task_name, error, stdout, stderr, load_errors)
-                }
-                None => RunResult::error(
+            match (code, failure) {
+                (_, Some(failure)) => RunResult::error(
+                    task_name,
+                    RtError::Task(failure),
+                    stdout,
+                    stderr,
+                    load_errors,
+                ),
+                (Some(0), None) => RunResult::success(task_name, stdout, stderr, load_errors),
+                (Some(code), None) => RunResult::error(
+                    task_name,
+                    RtError::TaskExit(code),
+                    stdout,
+                    stderr,
+                    load_errors,
+                ),
+                (None, None) => RunResult::error(
                     task_name,
                     RtError::Internal("task terminated by signal".to_string()),
                     stdout,
@@ -333,15 +320,15 @@ struct CapturedRun {
     code: Option<i32>,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-    captured_error: Option<Captured>,
+    failure: Option<TaskFailure>,
 }
 
 fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, RtError> {
     let root = prepared.root.as_path();
     let ruby = prepared.ruby;
     let harness = ruby::ensure_harness(root)?;
-    let mut child = ruby
-        .command(&harness)
+    let (mut command, control) = task_command(&ruby, &harness)?;
+    let mut child = command
         .arg("--run")
         .arg(root)
         .arg(task_name)
@@ -350,14 +337,13 @@ fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, R
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| ruby::environment_error(&ruby, &e))?;
+    drop(command);
 
     let mut stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
-    let stdout_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let stderr_reader = std::thread::spawn(move || capture_stderr(stderr, false));
+    let mut stderr = child.stderr.take().expect("stderr piped");
+    let stdout_reader = std::thread::spawn(move || read_all(&mut stdout));
+    let stderr_reader = std::thread::spawn(move || read_all(&mut stderr));
+    let control_reader = std::thread::spawn(move || read_all(control));
 
     if let Some(mut stdin) = child.stdin.take() {
         let _ = stdin.write_all(&prepared.input);
@@ -370,86 +356,54 @@ fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, R
         .join()
         .map_err(|_| RtError::Internal("stdout reader panicked".to_string()))?
         .map_err(|e| RtError::Internal(format!("failed to read task stdout: {e}")))?;
-    let captured = stderr_reader
+    let stderr = stderr_reader
         .join()
         .map_err(|_| RtError::Internal("stderr reader panicked".to_string()))?
         .map_err(|e| RtError::Internal(format!("failed to read task stderr: {e}")))?;
+    let failure = join_control(control_reader)?;
 
     Ok(CapturedRun {
         code: status.code(),
         stdout,
-        stderr: captured.visible,
-        captured_error: captured.error,
+        stderr,
+        failure,
     })
 }
 
-/// A withheld sentinel line: the parsed failure (if the payload was valid JSON)
-/// plus the raw bytes from the sentinel marker onward, so the caller can decide
-/// whether to surface it as an error or re-emit it verbatim.
-struct Captured {
-    failure: Option<TaskFailure>,
-    raw: Vec<u8>,
+fn task_command(
+    ruby: &RubyCommand,
+    harness: &std::path::Path,
+) -> Result<(Command, PipeReader), RtError> {
+    let (control_reader, control_writer) = os_pipe::pipe()
+        .map_err(|e| RtError::Internal(format!("failed to create task control pipe: {e}")))?;
+    let mut command = ruby.command(harness);
+    command
+        .fd_mappings(vec![FdMapping {
+            parent_fd: control_writer.into(),
+            child_fd: CONTROL_FD,
+        }])
+        .map_err(|e| RtError::Internal(format!("failed to map task control fd: {e}")))?;
+    command.env(CONTROL_FD_ENV, CONTROL_FD.to_string());
+    Ok((command, control_reader))
 }
 
-struct CapturedStderr {
-    visible: Vec<u8>,
-    error: Option<Captured>,
+fn read_all<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
-/// Stream task stderr while withholding the sentinel payload. Parsing stays on
-/// raw bytes so non-UTF-8 output neither aborts the tee nor leaks the sentinel;
-/// human mode keeps its existing lossy display behavior.
-fn tee_stderr<R: Read>(reader: R) -> Option<Captured> {
-    capture_stderr(reader, true)
-        .map(|captured| captured.error)
-        .unwrap_or(None)
-}
-
-fn capture_stderr<R: Read>(reader: R, passthrough: bool) -> std::io::Result<CapturedStderr> {
-    let mut reader = BufReader::new(reader);
-    let mut visible = Vec::new();
-    let mut error = None;
-    let mut line: Vec<u8> = Vec::new();
-    loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,
-            Err(error) => return Err(error),
-            Ok(_) => {}
-        }
-        match find_subslice(&line, ERROR_SENTINEL) {
-            Some(pos) => {
-                let prefix = &line[..pos];
-                if !prefix.is_empty() {
-                    visible.extend_from_slice(prefix);
-                    if passthrough {
-                        eprint!("{}", String::from_utf8_lossy(prefix));
-                    }
-                }
-                let raw = line[pos..].to_vec();
-                let rest = &line[pos + ERROR_SENTINEL.len()..];
-                let json = String::from_utf8_lossy(rest);
-                error = Some(Captured {
-                    failure: serde_json::from_str(json.trim()).ok(),
-                    raw,
-                });
-            }
-            None => {
-                visible.extend_from_slice(&line);
-                if passthrough {
-                    eprint!("{}", String::from_utf8_lossy(&line));
-                }
-            }
-        }
+fn join_control(
+    reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
+) -> Result<Option<TaskFailure>, RtError> {
+    let bytes = reader
+        .join()
+        .map_err(|_| RtError::Internal("control reader panicked".to_string()))?
+        .map_err(|e| RtError::Internal(format!("failed to read task control message: {e}")))?;
+    if bytes.is_empty() {
+        return Ok(None);
     }
-    Ok(CapturedStderr { visible, error })
-}
-
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || haystack.len() < needle.len() {
-        return None;
-    }
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| RtError::Internal(format!("invalid task control message: {e}")))
 }
