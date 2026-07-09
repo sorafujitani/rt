@@ -166,9 +166,10 @@ fn bundle_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Materialize the embedded harness at `<home>/harness-<hash>.rb`, writing
-/// only when the content differs. Returns the path.
-pub fn ensure_harness(root: &Path) -> Result<PathBuf, RtError> {
+/// Create the task home and converge rt-managed ignore rules. This runs even
+/// when metadata comes from cache, so stale generated state cannot survive an
+/// otherwise read-only invocation.
+pub fn maintain_home(root: &Path) -> Result<(), RtError> {
     std::fs::create_dir_all(root)
         .map_err(|e| RtError::Internal(format!("cannot create rt home directory: {e}")))?;
 
@@ -184,6 +185,13 @@ pub fn ensure_harness(root: &Path) -> Result<PathBuf, RtError> {
     if stale {
         let _ = std::fs::write(&gitignore, "/cache.json\n/harness-*.rb\n/*.tmp\n");
     }
+    Ok(())
+}
+
+/// Materialize the embedded harness at `<home>/harness-<hash>.rb`, writing
+/// only when the content differs. Returns the path.
+pub fn ensure_harness(root: &Path) -> Result<PathBuf, RtError> {
+    maintain_home(root)?;
 
     let mut hasher = DefaultHasher::new();
     HARNESS.hash(&mut hasher);

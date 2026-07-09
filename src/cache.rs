@@ -31,6 +31,7 @@ pub fn load(
     ruby: &RubyCommand,
     warn: bool,
 ) -> Result<(Metadata, RubyCommand), RtError> {
+    ruby::maintain_home(root)?;
     let current = scan_files(root)?;
     let ruby_desc = ruby.describe();
 
