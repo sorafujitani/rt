@@ -17,7 +17,7 @@ Prefer the JSON commands. They print JSON on stdout and nothing else, with full 
 ```bash
 rt list --json          # all tasks: name, description, file, params, options, gems, source
 rt help <task> --json   # usage metadata for one task
-rt run <task> [args...] # run a task
+rt run --json <task> [args...] # run and capture status, output, and errors as JSON
 ```
 
 Params are passed as positional arguments and options as flags:
@@ -26,9 +26,16 @@ Params are passed as positional arguments and options as flags:
 rt run deploy production --workers 4 --force
 ```
 
+Prefer `rt run --json` when an agent needs to interpret the result. It emits one
+JSON object on stdout and nothing on stderr, including on task, usage, and
+environment failures. The process exit code is still meaningful. Captured
+stdout/stderr use `encoding: "utf-8"` for text and `encoding: "base64"` for
+non-UTF-8 bytes. If a task declares its own `--json` option, pass task arguments
+after the separator: `rt run --json my-task -- --json`.
+
 Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets `ctx.dry_run?` to true inside the task. Use it to preview a task with side effects before running it for real.
 
-The exact JSON shapes, the full environment-variable table, and project layout details are in [reference.md](reference.md). Read it when you need the schema of `rt list --json` or an env var beyond `RT_ROOT`.
+The exact JSON shapes, the full environment-variable table, and project layout details are in [reference.md](reference.md). Read it when you need a JSON schema or an env var beyond `RT_ROOT`.
 
 ## Author tasks
 

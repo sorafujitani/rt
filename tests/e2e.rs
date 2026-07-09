@@ -139,6 +139,60 @@ fn missing_ruby_is_environment_error() {
 }
 
 #[test]
+fn run_json_reports_missing_ruby_as_json() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "greet"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_RUBY", "/nonexistent")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["exit_code"], 74);
+    assert_eq!(value["error"]["kind"], "environment");
+}
+
+#[test]
+fn run_json_reports_missing_project_as_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = rt()
+        .args(["run", "--json", "greet"])
+        .current_dir(dir.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "usage");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("no rt project found"));
+}
+
+#[test]
+fn run_json_reports_cli_parse_errors_as_json() {
+    let out = rt().args(["run", "--json"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["task"], "");
+    assert_eq!(value["error"]["kind"], "usage");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("required arguments"));
+}
+
+#[test]
 fn run_task_produces_output() {
     let staged = stage("basic");
     rt().args(["run", "greet", "--name", "sora"])
@@ -147,6 +201,193 @@ fn run_task_produces_output() {
         .assert()
         .success()
         .stdout(predicates::str::contains("Hello, sora!"));
+}
+
+#[test]
+fn run_json_captures_successful_execution() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "greet", "--name", "sora"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["task"], "greet");
+    assert_eq!(value["status"], "success");
+    assert_eq!(value["exit_code"], 0);
+    assert_eq!(value["stdout"]["encoding"], "utf-8");
+    assert_eq!(value["stdout"]["data"], "Hello, sora!\n");
+    assert_eq!(value["stderr"]["data"], "");
+    assert!(value["error"].is_null());
+}
+
+#[test]
+fn run_json_captures_both_output_streams() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "both_streams"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["stdout"]["data"], "out");
+    assert_eq!(value["stderr"]["data"], "err");
+}
+
+#[test]
+fn run_json_reports_usage_errors_as_json() {
+    let staged = stage("params");
+    let out = rt()
+        .args(["run", "--json", "deploy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["exit_code"], 2);
+    assert_eq!(value["error"]["kind"], "usage");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("missing required argument"));
+}
+
+#[test]
+fn run_json_reports_task_exception_structurally() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "boom"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "task_exception");
+    assert_eq!(value["error"]["class"], "RuntimeError");
+    assert_eq!(value["error"]["message"], "kaboom");
+    assert!(value["error"]["backtrace"].is_array());
+}
+
+#[test]
+fn run_json_hides_exception_sentinel_and_encodes_binary_stderr() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "boom_binary"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty());
+    assert!(!out
+        .stdout
+        .windows(b"__RT_ERROR__".len())
+        .any(|window| window == b"__RT_ERROR__"));
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["class"], "RuntimeError");
+    assert_eq!(value["stderr"]["encoding"], "base64");
+    assert_eq!(value["stderr"]["data"], "//4=");
+}
+
+#[test]
+fn run_json_preserves_custom_exit_code() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "bail"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["exit_code"], 3);
+    assert_eq!(value["error"]["kind"], "task_exit");
+}
+
+#[test]
+fn run_json_base64_encodes_non_utf8_output() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "binary_stdout"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["stdout"]["encoding"], "base64");
+    assert_eq!(value["stdout"]["data"], "//4=");
+}
+
+#[test]
+fn run_json_drains_large_stdout_and_stderr_without_deadlock() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "large_streams"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["stdout"]["data"].as_str().unwrap().len(), 131_072);
+    assert_eq!(value["stderr"]["data"].as_str().unwrap().len(), 131_072);
+}
+
+#[test]
+fn run_json_keeps_load_errors_in_the_result() {
+    let staged = stage("broken");
+    let out = rt()
+        .args(["run", "--json", "healthy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!value["load_errors"].as_array().unwrap().is_empty());
+    assert_eq!(value["stdout"]["data"], "ok\n");
+}
+
+#[test]
+fn task_can_receive_its_own_json_option_after_separator() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "owns_json", "--", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["stdout"]["data"], "true\n");
 }
 
 #[test]
@@ -821,6 +1062,29 @@ fn gem_install_failure_is_environment_error() {
         .failure()
         .code(74)
         .stderr(predicates::str::contains("resolve gems"));
+}
+
+#[test]
+fn run_json_captures_gem_install_failure() {
+    let staged = stage("gems");
+    let gem_home = tempfile::tempdir().unwrap();
+    let out = rt()
+        .args(["run", "--json", "needs_missing"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", "http://127.0.0.1:1")
+        .env("RT_GEM_HOME", gem_home.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert!(value["stderr"]["data"]
+        .as_str()
+        .unwrap()
+        .contains("resolve gems"));
 }
 
 #[test]

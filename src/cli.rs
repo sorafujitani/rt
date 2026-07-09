@@ -30,6 +30,9 @@ pub enum Command {
     },
     /// Run a task
     Run {
+        /// Emit a machine-readable execution result on stdout
+        #[arg(long)]
+        json: bool,
         /// Task name
         task: String,
         /// Task-specific params and options (parsed by rt, not clap)

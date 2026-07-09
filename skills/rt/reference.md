@@ -36,6 +36,36 @@
 
 Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in the task as strings regardless of the default's type.
 
+`rt run --json <task> [args...]`:
+
+```json
+{
+  "schema_version": 1,
+  "task": "deploy",
+  "status": "error",
+  "exit_code": 1,
+  "stdout": { "encoding": "utf-8", "data": "starting\n" },
+  "stderr": { "encoding": "utf-8", "data": "" },
+  "error": {
+    "kind": "task_exception",
+    "class": "RuntimeError",
+    "message": "deployment failed",
+    "backtrace": ["tasks/deploy.rb:12:in `block in <top (required)>'"]
+  },
+  "load_errors": []
+}
+```
+
+`status` is `success` or `error`. `error.kind` is one of `usage`,
+`task_exception`, `task_exit`, `environment`, or `internal`. A successful result
+has `error: null`. Output objects use `encoding: "utf-8"` when the captured bytes
+are valid UTF-8 and `encoding: "base64"` otherwise. JSON mode writes the result
+only to stdout and preserves the normal process exit code.
+
+The rt-level `--json` flag may appear before or after the task name. To pass a
+task-owned option named `--json`, separate task arguments with `--`, for example
+`rt run --json deploy -- --json`.
+
 ## Exit codes
 
 | exit | meaning |
