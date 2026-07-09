@@ -123,8 +123,12 @@ impl RubyCommand {
             // keeps working.
             cmd.env_remove("GEM_HOME");
             cmd.env_remove("GEM_PATH");
+            cmd.env_remove("RUBYGEMS_GEMDEPS");
             for (key, _) in std::env::vars_os() {
-                if key.to_string_lossy().starts_with("BUNDLE_") {
+                let name = key.to_string_lossy();
+                // `bundle exec` exports both BUNDLE_* (config) and BUNDLER_*
+                // (e.g. BUNDLER_VERSION, BUNDLER_ORIG_GEM_HOME) into the child.
+                if name.starts_with("BUNDLE_") || name.starts_with("BUNDLER_") {
                     cmd.env_remove(&key);
                 }
             }
@@ -282,11 +286,20 @@ mod tests {
 
     #[test]
     fn isolated_command_fully_scrubs_gem_and_bundle_env() {
-        // Set an ambient BUNDLE_* var so the dynamic sweep has something to strip.
+        // Ambient BUNDLE_*/BUNDLER_* vars so the dynamic sweep has work to do.
         std::env::set_var("BUNDLE_PATH", "/somewhere");
+        std::env::set_var("BUNDLER_VERSION", "2.5.0");
         let cmd = RubyCommand::plain_isolated().command(Path::new("/h.rb"));
         let removed = removed(&cmd);
-        for key in ["RUBYOPT", "RUBYLIB", "GEM_HOME", "GEM_PATH", "BUNDLE_PATH"] {
+        for key in [
+            "RUBYOPT",
+            "RUBYLIB",
+            "GEM_HOME",
+            "GEM_PATH",
+            "RUBYGEMS_GEMDEPS",
+            "BUNDLE_PATH",
+            "BUNDLER_VERSION",
+        ] {
             assert!(
                 removed.contains(&key.to_string()),
                 "isolated command must strip {key}"
@@ -295,5 +308,6 @@ mod tests {
         // The command does not re-set a Gemfile env on the isolated path.
         assert_eq!(set_value(&cmd, "BUNDLE_GEMFILE"), None::<&OsStr>);
         std::env::remove_var("BUNDLE_PATH");
+        std::env::remove_var("BUNDLER_VERSION");
     }
 }

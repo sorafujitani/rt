@@ -596,9 +596,50 @@ fn hostile_env_does_not_break_gem_task_or_discovery() {
         .env("GEM_PATH", "/nonexistent/broken")
         .env("BUNDLE_GEMFILE", "/nonexistent/Gemfile")
         .env("BUNDLE_PATH", "/nonexistent/bundle")
+        // Variables a real `bundle exec` exports into its child, which must not
+        // redirect the isolated install: this checks the README's "behaves the
+        // same under bundle exec" claim against an actual bundle-shaped env.
+        .env("BUNDLER_VERSION", "2.5.0")
+        .env("BUNDLER_ORIG_GEM_HOME", "/nonexistent/orig-gem-home")
+        .env("BUNDLER_SETUP", "/nonexistent/setup")
+        .env("RUBYGEMS_GEMDEPS", "/nonexistent/Gemfile")
         .assert()
         .success()
         .stdout(predicates::str::contains("dummy 1.0.0"));
+}
+
+#[test]
+fn parallel_gem_installs_share_home_without_corruption() {
+    let Some((_src, url)) = local_dummy_gem_source() else {
+        eprintln!("skipping: cannot build a local dummy gem source");
+        return;
+    };
+    let staged = stage("gems_dummy");
+    let gem_home = tempfile::tempdir().unwrap();
+    let bin = assert_cmd::cargo::cargo_bin("rt");
+
+    // Two processes race the first install of the same gem into one shared home.
+    // The harness's exclusive lock must serialize them so both exit 0 rather than
+    // colliding in rubygems' installer.
+    let spawn = || {
+        std::process::Command::new(&bin)
+            .args(["run", "use_dummy"])
+            .current_dir(staged.path())
+            .env("RT_CONFIG_DIR", empty_config())
+            .env_remove("RT_ROOT")
+            .env("RT_GEM_SOURCE", &url)
+            .env("RT_GEM_HOME", gem_home.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut a = spawn();
+    let mut b = spawn();
+    let ra = a.wait().unwrap();
+    let rb = b.wait().unwrap();
+    assert!(ra.success(), "first parallel install should exit 0");
+    assert!(rb.success(), "second parallel install should exit 0");
 }
 
 #[test]

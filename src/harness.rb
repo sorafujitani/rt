@@ -299,26 +299,22 @@ def emit_metadata(root)
   puts JSON.generate(payload)
 end
 
-# Resolve a task file's declared gems with bundler/inline before the block
-# runs. Nothing may reach stdout (agents pipe task stdout to tools like jq), so
-# any Bundler chatter is redirected to stderr. Install failure is an
-# environment error (exit 74), matching rt's exit-code contract.
 # Redirect gem installs into a per-ABI cache dir instead of the default gem
 # environment, which on macOS system Ruby is unwritable without sudo. Built
 # before requiring bundler/inline so bundler resolves against the isolated
 # paths. Native extensions are ABI-specific, so the dir is keyed on engine +
 # ruby_version. GEM_PATH is set explicitly (isolated home + Ruby's default dir):
 # with only GEM_HOME set, rubygems' PathSupport re-adds the user gem dir and the
-# ambient environment leaks back in. default_dir supplies Ruby's bundled/default
-# gems (bundler, rake) and must be read before ENV is mutated.
+# ambient environment leaks back in. Returns the isolated home so the caller can
+# lock it. Any failure here is an environment error (exit 74).
 def isolate_gem_home
   configured = ENV["RT_GEM_HOME"]
   configured = nil if configured.nil? || configured.strip.empty?
   base = configured || File.join(cache_home, "rt", "gems")
   home = File.join(base, "#{RUBY_ENGINE}-#{RbConfig::CONFIG["ruby_version"]}")
 
-  default_dir = Gem.default_dir
   begin
+    default_dir = Gem.default_dir
     FileUtils.mkdir_p(home)
   rescue SystemCallError => e
     warn "rt: cannot create gem cache dir #{home}: #{e.message}"
@@ -328,6 +324,7 @@ def isolate_gem_home
   ENV["GEM_HOME"] = home
   ENV["GEM_PATH"] = [home, default_dir].join(File::PATH_SEPARATOR)
   Gem.clear_paths
+  home
 end
 
 def cache_home
@@ -335,10 +332,14 @@ def cache_home
   xdg.nil? || xdg.strip.empty? ? File.join(Dir.home, ".cache") : xdg
 end
 
+# Resolve a task file's declared gems with bundler/inline before the block runs.
+# Nothing may reach stdout (agents pipe task stdout to tools like jq), so any
+# Bundler chatter is redirected to stderr. Install failure is an environment
+# error (exit 74), matching rt's exit-code contract.
 def install_gems(gems)
   return if gems.nil? || gems.empty?
 
-  isolate_gem_home
+  home = isolate_gem_home
 
   # Require bundler/inline before the main rescue so its absence (a broken Ruby)
   # is reported as exit 74 rather than raising a NameError when the rescue tries
@@ -352,6 +353,14 @@ def install_gems(gems)
 
   summary = gems.map { |g| [g["name"], *g["requirements"]].join(" ").strip }.join(", ")
   warn "rt: resolving gems (#{summary})"
+
+  # rt runs agents in parallel against a shared gem home, so two processes can
+  # try the first install of the same gem at once and collide in rubygems'
+  # installer (transient exit 74, a half-written gem dir). Serialize installs per
+  # ABI dir with an exclusive file lock; the fast path (gems already present)
+  # still resolves under the lock but does no work.
+  lock = File.open(File.join(home, ".install.lock"), File::CREAT | File::RDWR, 0o644)
+  lock.flock(File::LOCK_EX)
 
   # Nothing may reach stdout (agents pipe task stdout to tools like jq). Redirect
   # fd 1 to stderr at the OS level, not just $stdout, so a native-extension build
@@ -376,6 +385,8 @@ def install_gems(gems)
   ensure
     $stdout.reopen(saved)
     saved.close
+    lock.flock(File::LOCK_UN)
+    lock.close
   end
 end
 
