@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::{Metadata, OptionType, Task};
+use crate::metadata::{Metadata, OptionType, Source, Task};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 
@@ -67,6 +67,26 @@ pub fn print_help(task: &Task) {
     if let Some(d) = &task.description {
         println!();
         println!("{d}");
+    }
+
+    match task.source {
+        Source::Global => println!("Source: global"),
+        Source::Project => {}
+    }
+
+    if !task.gems.is_empty() {
+        let list: Vec<String> = task
+            .gems
+            .iter()
+            .map(|g| {
+                if g.requirements.is_empty() {
+                    g.name.clone()
+                } else {
+                    format!("{} ({})", g.name, g.requirements.join(", "))
+                }
+            })
+            .collect();
+        println!("Gems: {}", list.join(", "));
     }
 
     if !task.params.is_empty() {
