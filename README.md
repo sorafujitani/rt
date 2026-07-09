@@ -17,12 +17,14 @@ Ruby using only the standard library.
 
 ## Install
 
-Via Homebrew (the repository doubles as a tap; no releases yet, so install from HEAD):
+Via Homebrew (the repository doubles as a tap):
 
 ```
 brew tap sorafujitani/rt https://github.com/sorafujitani/rt
-brew install --HEAD sorafujitani/rt/rt
+brew install sorafujitani/rt/rt
 ```
+
+Add `--HEAD` to build the latest main instead of the released version.
 
 Or with cargo, from a checkout:
 
