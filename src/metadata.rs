@@ -1,17 +1,40 @@
 use serde::{Deserialize, Serialize};
 
-/// Wire-format version shared with the Ruby harness. Bumped when the metadata
-/// schema changes; a mismatch invalidates any cache written by an older rt.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// Version of the public `list/help --json` metadata schema.
+pub const METADATA_SCHEMA_VERSION: u32 = 2;
+
+/// Version of the private Rust/Ruby harness wire contract.
+pub const HARNESS_PROTOCOL_VERSION: u32 = 1;
 
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metadata {
-    pub protocol_version: u32,
+    #[serde(rename = "protocol_version")]
+    pub schema_version: u32,
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub errors: Vec<LoadError>,
+}
+
+/// Private payload emitted by the embedded Ruby harness. It deliberately does
+/// not carry the public metadata schema version.
+#[derive(Debug, Deserialize)]
+pub(crate) struct HarnessMetadata {
+    pub harness_protocol_version: u32,
+    pub tasks: Vec<Task>,
+    #[serde(default)]
+    pub errors: Vec<LoadError>,
+}
+
+impl HarnessMetadata {
+    pub(crate) fn into_metadata(self) -> Metadata {
+        Metadata {
+            schema_version: METADATA_SCHEMA_VERSION,
+            tasks: self.tasks,
+            errors: self.errors,
+        }
+    }
 }
 
 /// Where a task was discovered. Emitted by the Rust merge step, not the
@@ -91,5 +114,24 @@ pub struct LoadError {
 impl Metadata {
     pub fn find_task(&self, name: &str) -> Option<&Task> {
         self.tasks.iter().find(|t| t.name == name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn public_metadata_json_contract() {
+        let metadata = Metadata {
+            schema_version: METADATA_SCHEMA_VERSION,
+            tasks: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(metadata).unwrap(),
+            json!({ "protocol_version": 2, "tasks": [], "errors": [] })
+        );
     }
 }

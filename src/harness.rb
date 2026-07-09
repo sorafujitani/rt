@@ -14,7 +14,7 @@ require "stringio"
 require "fileutils"
 require "rbconfig"
 
-PROTOCOL_VERSION = 2
+HARNESS_PROTOCOL_VERSION = 1
 ERROR_SENTINEL = "\x1e__RT_ERROR__"
 
 module RT
@@ -292,7 +292,7 @@ end
 def emit_metadata(root)
   with_silenced_stdout { load_tasks(root) }
   payload = {
-    "protocol_version" => PROTOCOL_VERSION,
+    "harness_protocol_version" => HARNESS_PROTOCOL_VERSION,
     "tasks" => RT.registry.tasks.map(&:to_meta),
     "errors" => RT.registry.errors
   }

@@ -1,7 +1,7 @@
 use crate::args;
 use crate::cache;
 use crate::error::{RtError, TaskFailure};
-use crate::metadata::{LoadError, Metadata, Source, PROTOCOL_VERSION};
+use crate::metadata::{LoadError, Metadata, Source, METADATA_SCHEMA_VERSION};
 use crate::output;
 use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
@@ -93,7 +93,7 @@ fn merge(project: Option<Metadata>, global: Option<Metadata>) -> Metadata {
     }
 
     Metadata {
-        protocol_version: PROTOCOL_VERSION,
+        schema_version: METADATA_SCHEMA_VERSION,
         tasks,
         errors,
     }
@@ -120,7 +120,7 @@ pub fn help(roots: &Roots, task: &str, json: bool) -> Result<(), RtError> {
         .find_task(task)
         .ok_or_else(|| unknown_task(&loaded.meta, task))?;
     if json {
-        let payload = json!({ "protocol_version": loaded.meta.protocol_version, "task": found });
+        let payload = json!({ "protocol_version": loaded.meta.schema_version, "task": found });
         let text = serde_json::to_string_pretty(&payload)
             .map_err(|e| RtError::Internal(format!("cannot serialize task: {e}")))?;
         println!("{text}");
