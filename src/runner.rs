@@ -26,7 +26,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut project_meta = None;
     let mut project = None;
     if let Some(root) = &roots.project {
-        let ruby = RubyCommand::resolve(root, warn);
+        let ruby = RubyCommand::resolve(root, Source::Project, warn);
         let (meta, used) = cache::load(root, &ruby, warn)?;
         project_meta = Some(meta);
         project = Some((root.clone(), used));
@@ -35,7 +35,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut global_meta = None;
     let mut global = None;
     if let Some(root) = &roots.global {
-        let ruby = RubyCommand::resolve(root, warn);
+        let ruby = RubyCommand::resolve(root, Source::Global, warn);
         let (meta, used) = cache::load(root, &ruby, warn)?;
         global_meta = Some(meta);
         global = Some((root.clone(), used));
