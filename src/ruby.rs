@@ -103,12 +103,31 @@ impl RubyCommand {
     pub fn command(&self, harness: &Path) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prep_args);
+
+        // Minimal scrub on every path: a RUBYOPT/RUBYLIB inherited from the
+        // caller's shell (e.g. rt launched under `bundle exec`) injects requires
+        // and load paths that can break the harness before it runs. A
+        // user-intended RUBYOPT (--yjit) is lost too; noted in the README.
+        cmd.env_remove("RUBYOPT");
+        cmd.env_remove("RUBYLIB");
+
         if let Some(g) = &self.bundle_gemfile {
             cmd.env("BUNDLE_GEMFILE", g);
         }
+
         if self.isolated {
-            cmd.env_remove("BUNDLE_GEMFILE");
-            cmd.env_remove("RUBYOPT");
+            // Full scrub: the harness builds its own GEM_HOME for inline-gem
+            // installs, so every inherited gem/bundler variable that could
+            // redirect resolution is stripped. GEM_HOME/GEM_PATH are left alone
+            // on non-isolated paths so a bundle living under the user's GEM_HOME
+            // keeps working.
+            cmd.env_remove("GEM_HOME");
+            cmd.env_remove("GEM_PATH");
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().starts_with("BUNDLE_") {
+                    cmd.env_remove(&key);
+                }
+            }
         }
         cmd.arg(harness);
         cmd
@@ -206,4 +225,75 @@ pub fn environment_error(ruby: &RubyCommand, e: &std::io::Error) -> RtError {
         "could not start Ruby ({}): {e}. Install Ruby or set RT_RUBY to a Ruby interpreter.",
         ruby.program()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// Keys the Command explicitly clears (env_remove -> value None).
+    fn removed(cmd: &Command) -> Vec<String> {
+        cmd.get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The value a Command sets for `key`, if any.
+    fn set_value<'a>(cmd: &'a Command, key: &str) -> Option<&'a OsStr> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(key))
+            .and_then(|(_, v)| v)
+    }
+
+    fn bundle(gemfile: &str) -> RubyCommand {
+        RubyCommand {
+            program: "bundle".to_string(),
+            prep_args: vec!["exec".to_string(), "ruby".to_string()],
+            bundle_gemfile: Some(PathBuf::from(gemfile)),
+            isolated: false,
+        }
+    }
+
+    #[test]
+    fn plain_command_minimally_scrubs_only_rubyopt_and_rubylib() {
+        let cmd = RubyCommand::plain().command(Path::new("/h.rb"));
+        let removed = removed(&cmd);
+        assert!(removed.contains(&"RUBYOPT".to_string()));
+        assert!(removed.contains(&"RUBYLIB".to_string()));
+        // GEM_HOME/GEM_PATH must survive so a bundle under the user's GEM_HOME works.
+        assert!(!removed.contains(&"GEM_HOME".to_string()));
+        assert!(!removed.contains(&"GEM_PATH".to_string()));
+    }
+
+    #[test]
+    fn bundle_command_sets_gemfile_and_minimally_scrubs() {
+        let cmd = bundle("/proj/Gemfile").command(Path::new("/h.rb"));
+        assert_eq!(
+            set_value(&cmd, "BUNDLE_GEMFILE"),
+            Some(OsStr::new("/proj/Gemfile"))
+        );
+        let removed = removed(&cmd);
+        assert!(removed.contains(&"RUBYOPT".to_string()));
+        assert!(removed.contains(&"RUBYLIB".to_string()));
+        assert!(!removed.contains(&"GEM_HOME".to_string()));
+    }
+
+    #[test]
+    fn isolated_command_fully_scrubs_gem_and_bundle_env() {
+        // Set an ambient BUNDLE_* var so the dynamic sweep has something to strip.
+        std::env::set_var("BUNDLE_PATH", "/somewhere");
+        let cmd = RubyCommand::plain_isolated().command(Path::new("/h.rb"));
+        let removed = removed(&cmd);
+        for key in ["RUBYOPT", "RUBYLIB", "GEM_HOME", "GEM_PATH", "BUNDLE_PATH"] {
+            assert!(
+                removed.contains(&key.to_string()),
+                "isolated command must strip {key}"
+            );
+        }
+        // The command does not re-set a Gemfile env on the isolated path.
+        assert_eq!(set_value(&cmd, "BUNDLE_GEMFILE"), None::<&OsStr>);
+        std::env::remove_var("BUNDLE_PATH");
+    }
 }
