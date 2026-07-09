@@ -1,9 +1,18 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// A process-lifetime empty directory used as the default config dir so tests
+/// never pick up the real ~/.config/rt. Held in a static so it outlives every
+/// test (statics are not dropped, so the tempdir survives to process exit).
+fn empty_config() -> &'static Path {
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().unwrap()).path()
 }
 
 /// Copy a fixture into a fresh tempdir so cache writes don't touch the repo.
@@ -29,7 +38,11 @@ fn copy_dir(src: &Path, dst: &Path) {
 }
 
 fn rt() -> Command {
-    Command::cargo_bin("rt").unwrap()
+    let mut cmd = Command::cargo_bin("rt").unwrap();
+    // Isolate every test from the real user config dir so global-task discovery
+    // finds nothing unless a test opts in with its own RT_CONFIG_DIR.
+    cmd.env("RT_CONFIG_DIR", empty_config());
+    cmd
 }
 
 #[test]
@@ -79,7 +92,7 @@ fn list_json_emits_only_json_on_stdout() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["protocol_version"], 2);
     assert!(!value["tasks"].as_array().unwrap().is_empty());
 }
 
@@ -323,12 +336,28 @@ fn broken_bundle_exec_falls_back_to_plain_ruby() {
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env_remove("RT_RUBY")
-        .env("PATH", path)
+        .env("PATH", &path)
         .assert()
         .success()
         .stdout(predicates::str::contains("greet"));
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("plain ruby"), "expected fallback warning");
+
+    // In --json mode the same fallback must stay silent on stderr.
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "stderr must be clean in --json mode, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -366,7 +395,7 @@ fn help_json_emits_single_task() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 1);
+    assert_eq!(value["protocol_version"], 2);
     assert_eq!(value["task"]["name"], "deploy");
     assert_eq!(value["task"]["params"][0]["name"], "environment");
 }
@@ -403,6 +432,318 @@ fn second_list_hits_cache_without_launching_ruby() {
         .assert()
         .success()
         .stdout(predicates::str::contains("greet"));
+}
+
+/// Assemble a self-contained offline gem source from the machine's cached rake
+/// `.gem` files so `gemfile(true)` can resolve without any network. Returns
+/// None when no rake gem is cached (then the caller skips).
+fn local_rake_source() -> Option<(tempfile::TempDir, String)> {
+    let listing = std::process::Command::new("ruby")
+        .args([
+            "-e",
+            "Gem.path.each { |p| Dir.glob(File.join(p, 'cache', 'rake-*.gem')).each { |g| puts g } }",
+        ])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&listing.stdout);
+    let gems: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    if gems.is_empty() {
+        return None;
+    }
+    let dir = tempfile::tempdir().ok()?;
+    let gems_dir = dir.path().join("gems");
+    std::fs::create_dir_all(&gems_dir).ok()?;
+    for g in &gems {
+        let name = Path::new(g).file_name()?;
+        std::fs::copy(g, gems_dir.join(name)).ok()?;
+    }
+    let status = std::process::Command::new("gem")
+        .args(["generate_index", "-d"])
+        .arg(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let url = format!("file://{}", dir.path().display());
+    Some((dir, url))
+}
+
+#[test]
+fn gem_task_lists_gems_in_json_and_help() {
+    let staged = stage("gems");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let task = value["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "with_rake")
+        .unwrap();
+    assert_eq!(task["gems"][0]["name"], "rake");
+
+    rt().args(["help", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Gems: rake"));
+}
+
+#[test]
+fn gem_task_runs_with_offline_local_source() {
+    let Some((_src, url)) = local_rake_source() else {
+        eprintln!("skipping: no cached rake gem to build an offline source");
+        return;
+    };
+    let staged = stage("gems");
+    rt().args(["run", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", &url)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("rake"));
+}
+
+#[test]
+fn top_level_require_of_declared_gem_gets_a_hint() {
+    let staged = stage("gems_toplevel");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let errors = value["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| {
+        e["class"] == "LoadError"
+            && e["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("inside the task block")
+    }));
+}
+
+#[test]
+#[ignore = "installs a real gem from rubygems.org; run with `cargo test -- --ignored`"]
+fn gem_task_installs_a_real_gem() {
+    let staged = stage("gems_real");
+    // Install into a throwaway GEM_HOME so the run needs no sudo and leaves no
+    // trace; GEM_PATH still exposes the system gems (bundler itself).
+    let gem_home = tempfile::tempdir().unwrap();
+    let sys_gem_dir = String::from_utf8(
+        std::process::Command::new("ruby")
+            .args(["-e", "print Gem.dir"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let gem_path = format!("{}:{}", gem_home.path().display(), sys_gem_dir);
+
+    rt().args(["run", "paint_demo"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("GEM_HOME", gem_home.path())
+        .env("GEM_PATH", gem_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("colored"));
+}
+
+#[test]
+fn empty_gem_source_falls_back_to_default() {
+    // An empty RT_GEM_SOURCE must be treated as unset. Before the fix, a blank
+    // value reached bundler as `source("")` and failed with "must be an absolute
+    // URI"; after the fix it falls back to the default rubygems.org source. This
+    // runs offline, so the fallback may fail to fetch — but never with the blank
+    // -source symptom, which is the regression we guard against.
+    let staged = stage("gems");
+    let assert = rt()
+        .args(["run", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", "")
+        .assert();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains("absolute URI") && !stderr.contains("must be an absolute"),
+        "blank RT_GEM_SOURCE must not reach bundler as an empty source; stderr was:\n{stderr}"
+    );
+}
+
+#[test]
+fn gem_install_failure_is_environment_error() {
+    let staged = stage("gems");
+    // A nonexistent gem plus an unreachable source: bundler cannot fetch specs,
+    // so resolution fails and the harness exits 74 (environment error).
+    rt().args(["run", "needs_missing"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", "http://127.0.0.1:1")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(predicates::str::contains("resolve gems"));
+}
+
+#[test]
+fn malformed_gem_requirement_is_environment_error() {
+    // A bad version string fails resolution locally (no network needed) and
+    // must still map to the deterministic environment exit code, not a task bug.
+    let staged = stage("gems");
+    rt().args(["run", "bad_version"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(predicates::str::contains("resolve gems"));
+}
+
+#[test]
+fn global_tasks_list_and_run_outside_any_project() {
+    let global = stage("global");
+    let cwd = tempfile::tempdir().unwrap(); // no project here or above
+
+    rt().arg("list")
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ggreet"));
+
+    rt().args(["run", "ggreet"])
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("hello from global"));
+
+    // `rt help` names the source and, for a global task, its config dir path.
+    rt().args(["help", "ggreet"])
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Source: global ("));
+
+    // The global root keeps its own cache/harness under <config_dir>/.rt.
+    assert!(global.path().join(".rt/cache.json").is_file());
+    let harness = std::fs::read_dir(global.path().join(".rt"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.file_name().to_string_lossy().starts_with("harness-"));
+    assert!(harness, "global harness should live under <config_dir>/.rt");
+}
+
+#[test]
+fn project_and_global_tasks_list_in_two_sections() {
+    let project = stage("basic");
+    let global = stage("global");
+    let assert = rt()
+        .arg("list")
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Project tasks:"))
+        .stdout(predicates::str::contains("Global tasks:"))
+        .stdout(predicates::str::contains("greet"))
+        .stdout(predicates::str::contains("ggreet"));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // Project section precedes the global one.
+    assert!(stdout.find("Project tasks:").unwrap() < stdout.find("Global tasks:").unwrap());
+}
+
+#[test]
+fn project_task_shadows_global_of_same_name() {
+    let project = stage("basic");
+    let global = stage("global");
+
+    // The project's greet wins the name collision.
+    rt().args(["run", "greet", "--name", "sora"])
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Hello, sora!"))
+        .stdout(predicates::str::contains("GLOBAL GREET").not());
+
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tasks = value["tasks"].as_array().unwrap();
+
+    // Names are unique: exactly one "greet", and it is the project one.
+    let greets: Vec<&serde_json::Value> = tasks.iter().filter(|t| t["name"] == "greet").collect();
+    assert_eq!(greets.len(), 1);
+    assert_eq!(greets[0]["source"], "project");
+
+    // The unique global task survives and is tagged global.
+    let ggreet = tasks.iter().find(|t| t["name"] == "ggreet").unwrap();
+    assert_eq!(ggreet["source"], "global");
+
+    // The hidden global greet is reported as a ShadowedTask warning.
+    let errors = value["errors"].as_array().unwrap();
+    assert!(errors
+        .iter()
+        .any(|e| e["class"] == "ShadowedTask" && e["source"] == "global"));
+}
+
+#[test]
+fn protocol_version_bump_invalidates_old_cache() {
+    let staged = stage("basic");
+    let rt_dir = staged.path().join(".rt");
+    std::fs::create_dir_all(&rt_dir).unwrap();
+    // A well-formed cache from an older protocol: it names a task that does not
+    // exist. If honored, "ghost" would appear; a correct bump ignores it.
+    let stale = serde_json::json!({
+        "cache_version": 1,
+        "ruby_command": "ruby",
+        "files": {},
+        "metadata": {
+            "protocol_version": 1,
+            "tasks": [{ "name": "ghost", "file": "tasks/ghost.rb" }],
+            "errors": []
+        }
+    });
+    std::fs::write(rt_dir.join("cache.json"), stale.to_string()).unwrap();
+
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("greet"))
+        .stdout(predicates::str::contains("ghost").not());
 }
 
 #[test]

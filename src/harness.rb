@@ -12,7 +12,7 @@
 require "json"
 require "stringio"
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 ERROR_SENTINEL = "\x1e__RT_ERROR__"
 
 module RT
@@ -36,7 +36,8 @@ module RT
         "description" => @description,
         "file" => @file,
         "params" => @params.map(&:to_meta),
-        "options" => @options.map(&:to_meta)
+        "options" => @options.map(&:to_meta),
+        "gems" => RT.gems_for(@file)
       }
     end
   end
@@ -151,6 +152,17 @@ module RT
       RT.pending[:description] = text
     end
 
+    # Declared at the top level of a task file; scoped to that file. On the
+    # top-level object this shadows Kernel#gem, but task blocks run on a fresh
+    # object where Kernel#gem is visible again, so declarations are structurally
+    # limited to file scope.
+    def gem(name, *requirements)
+      RT.file_gems[RT.current_file] << {
+        "name" => name.to_s,
+        "requirements" => requirements.map(&:to_s)
+      }
+    end
+
     def param(name, required: false, default: nil, enum: nil, description: nil)
       RT.pending[:params] << Param.new(
         name.to_s,
@@ -196,6 +208,14 @@ module RT
       @pending ||= fresh_pending
     end
 
+    def file_gems
+      @file_gems ||= Hash.new { |h, k| h[k] = [] }
+    end
+
+    def gems_for(file)
+      file_gems.fetch(file, [])
+    end
+
     def consume_pending
       current = pending
       @pending = fresh_pending
@@ -233,7 +253,13 @@ def load_tasks(root)
         message: "task file called exit(#{e.status}) while loading"
       )
     rescue ScriptError, StandardError => e
-      RT.registry.record_error(file: rel, klass: e.class.name, message: e.message)
+      message = e.message
+      # A gem required at the top level fails discovery (gems are only
+      # installed at run time). Point the author at the fix.
+      if e.is_a?(LoadError) && !RT.file_gems.fetch(rel, []).empty?
+        message += " (declared gems must be required inside the task block, not at the top level)"
+      end
+      RT.registry.record_error(file: rel, klass: e.class.name, message: message)
     end
   end
   RT.current_file = nil
@@ -271,6 +297,52 @@ def emit_metadata(root)
   puts JSON.generate(payload)
 end
 
+# Resolve a task file's declared gems with bundler/inline before the block
+# runs. Nothing may reach stdout (agents pipe task stdout to tools like jq), so
+# any Bundler chatter is redirected to stderr. Install failure is an
+# environment error (exit 74), matching rt's exit-code contract.
+def install_gems(gems)
+  return if gems.nil? || gems.empty?
+
+  # Require bundler/inline before the main rescue so its absence (a broken Ruby)
+  # is reported as exit 74 rather than raising a NameError when the rescue tries
+  # to name Bundler::BundlerError on a Ruby without Bundler loaded.
+  begin
+    require "bundler/inline"
+  rescue LoadError => e
+    warn "rt: cannot load bundler/inline to resolve gems: #{e.message}"
+    exit 74
+  end
+
+  summary = gems.map { |g| [g["name"], *g["requirements"]].join(" ").strip }.join(", ")
+  warn "rt: resolving gems (#{summary})"
+
+  # Nothing may reach stdout (agents pipe task stdout to tools like jq). Redirect
+  # fd 1 to stderr at the OS level, not just $stdout, so a native-extension build
+  # subprocess writing straight to fd 1 is captured too. Restored afterward.
+  saved = $stdout.dup
+  $stdout.reopen($stderr)
+  begin
+    # An empty RT_GEM_SOURCE is truthy in Ruby, so treat blank as unset and fall
+    # back to the default source rather than an empty source URL.
+    configured = ENV["RT_GEM_SOURCE"]
+    configured = nil if configured.nil? || configured.strip.empty?
+    gemfile(true, quiet: true) do
+      source(configured || "https://rubygems.org")
+      gems.each { |g| gem(g["name"], *g["requirements"]) }
+    end
+  # Resolution failure is an environment problem, not a task bug, so any failure
+  # maps to exit 74: missing gems, unreachable/invalid sources, network and OS
+  # errors, and malformed version requirements all surface as StandardError.
+  rescue StandardError => e
+    warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
+    exit 74
+  ensure
+    $stdout.reopen(saved)
+    saved.close
+  end
+end
+
 def run_task(root, name)
   input = $stdin.read
   args = input.empty? ? {} : JSON.parse(input)
@@ -285,6 +357,10 @@ def run_task(root, name)
     warn "rt: task #{name.inspect} not found while running"
     exit 70
   end
+
+  # Installed even under --dry-run: the task block still `require`s these gems,
+  # so they must be resolvable before the block runs.
+  install_gems(RT.gems_for(task.file))
 
   ctx = RT::Context.new(params: params, options: options, dry_run: dry_run)
   begin

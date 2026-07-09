@@ -85,6 +85,48 @@ from file paths. Declaring the same name twice is reported as an error.
 
 `--dry-run` is available for every task and sets `ctx.dry_run?` to true.
 
+### Declaring gems
+
+A task file may declare gems it needs with a top-level `gem` line. rt resolves
+them with `bundler/inline` just before the task runs, so a task can depend on a
+gem without the project having a `Gemfile`.
+
+```ruby
+# tasks/gh-release.rb
+gem "octokit", "~> 8.0"
+
+desc "Create a GitHub release"
+param :tag, required: true
+task "gh:release" do |ctx|
+  require "octokit"       # require INSIDE the task block, not at the top level
+  # ...
+end
+```
+
+Rules and behavior:
+
+- **Declare at the top level, require inside the block.** `gem` lines go at the
+  top of the file; the matching `require` must live inside the `task` block.
+  Requiring a declared gem at the top level fails discovery (the gem is not
+  installed yet) and is reported as a load error with a hint.
+- **Gems are scoped to the file** that declares them and apply to every task in
+  that file. `rt help` shows a `Gems:` line and `rt list --json` includes a
+  `gems` array on each task.
+- **Gem tasks are self-contained.** A task that declares gems runs under plain
+  Ruby with the project's Bundler context (`BUNDLE_GEMFILE`, `RUBYOPT`) removed,
+  so it does *not* see the gems from a project `Gemfile`. Declare everything the
+  task needs. Isolation is not total, though: if you launch `rt` itself under
+  `bundle exec`, the outer environment (`GEM_HOME`, `GEM_PATH`, and similar) can
+  still leak in. Full environment isolation is deferred to the Phase 3 install
+  isolation work.
+- **Installation runs even under `--dry-run`,** because the task block still
+  `require`s the gems and they must be resolvable first.
+- **Install target is the default gem environment** (`bundler/inline`'s normal
+  behavior); there is no per-task install isolation yet. Set `RT_GEM_SOURCE` to
+  use a gem source other than `https://rubygems.org`.
+- If resolution fails (missing gem, unreachable source), rt exits `74`
+  (environment error) and the task does not run.
+
 ## Commands
 
 - `rt list` — list tasks with descriptions.
@@ -97,6 +139,34 @@ from file paths. Declaring the same name twice is reported as an error.
 else. The schema keeps full type information for params and options so it can
 be converted to a JSON Schema or an MCP tool definition. Load errors are
 reported in the JSON `errors` array rather than on stderr.
+
+## Global tasks
+
+Besides a project's `tasks/`, rt also loads machine-wide tasks from a config
+directory, so you can carry personal tasks across every repository — or use rt
+with no project at all. Put task files in `<config_dir>/tasks/`, where
+`config_dir` is resolved in this order:
+
+1. `RT_CONFIG_DIR`, if set.
+2. `$XDG_CONFIG_HOME/rt`, if `XDG_CONFIG_HOME` is set.
+3. `~/.config/rt`.
+
+Global tasks work the same as project tasks, and get their own cache and
+harness under `<config_dir>/.rt/`.
+
+A word on trust: the top level of every task file runs during discovery, on
+*every* rt invocation (`list`, `help`, and `run`) from any directory. Because
+global task files load regardless of where you are, write access to
+`<config_dir>/tasks/` is equivalent to code-execution access whenever you run
+rt. Keep that directory as trusted as any startup script.
+
+- Outside any project, rt runs purely from global tasks.
+- Inside a project, `rt list` shows two sections, `Project tasks:` and
+  `Global tasks:`.
+- On a name collision the **project task wins**; the shadowed global task is
+  dropped from the task list and reported as a `ShadowedTask` warning. This
+  keeps task names unique, including in `--json`, where every task carries a
+  `source` field of `project` or `global`.
 
 ## Exit codes
 
@@ -125,6 +195,11 @@ back to plain `ruby`. If `bundle exec` is installed but fails (for example when
 the bundle's gems are not installed), rt warns and retries discovery once with
 plain `ruby`. The plain-Ruby path is the primary one; Bundler is only an
 optimization for projects that already use it.
+
+A task that [declares gems](#declaring-gems) is the one exception: it always
+runs under plain Ruby (honoring `RT_RUBY`) with `BUNDLE_GEMFILE` and `RUBYOPT`
+stripped, so `bundler/inline` can resolve the declared gems without fighting an
+active `bundle exec`.
 
 ## Caching
 

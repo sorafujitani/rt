@@ -1,45 +1,136 @@
 use crate::args;
 use crate::cache;
 use crate::error::RtError;
-use crate::metadata::Metadata;
+use crate::metadata::{LoadError, Metadata, Source, PROTOCOL_VERSION};
 use crate::output;
+use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Stdio;
 
 const ERROR_SENTINEL: &[u8] = b"\x1e__RT_ERROR__";
 
-pub fn list(root: &Path, json: bool) -> Result<(), RtError> {
+/// Metadata merged across roots, plus the interpreter that produced each root's
+/// metadata (needed to run a task with the same Ruby that discovered it).
+struct Loaded {
+    meta: Metadata,
+    project: Option<(PathBuf, RubyCommand)>,
+    global: Option<(PathBuf, RubyCommand)>,
+}
+
+fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
+    let mut project_meta = None;
+    let mut project = None;
+    if let Some(root) = &roots.project {
+        let ruby = RubyCommand::resolve(root, warn);
+        let (meta, used) = cache::load(root, &ruby, warn)?;
+        project_meta = Some(meta);
+        project = Some((root.clone(), used));
+    }
+
+    let mut global_meta = None;
+    let mut global = None;
+    if let Some(root) = &roots.global {
+        let ruby = RubyCommand::resolve(root, warn);
+        let (meta, used) = cache::load(root, &ruby, warn)?;
+        global_meta = Some(meta);
+        global = Some((root.clone(), used));
+    }
+
+    Ok(Loaded {
+        meta: merge(project_meta, global_meta),
+        project,
+        global,
+    })
+}
+
+/// Merge project and global metadata into a single name-unique task list.
+/// Project wins name collisions; the hidden global task is dropped and recorded
+/// as a `ShadowedTask` warning so the JSON task list stays unique.
+fn merge(project: Option<Metadata>, global: Option<Metadata>) -> Metadata {
+    let mut tasks = Vec::new();
+    let mut errors = Vec::new();
+    let mut names: HashSet<String> = HashSet::new();
+
+    if let Some(m) = project {
+        for mut t in m.tasks {
+            t.source = Source::Project;
+            names.insert(t.name.clone());
+            tasks.push(t);
+        }
+        for mut e in m.errors {
+            e.source = Source::Project;
+            errors.push(e);
+        }
+    }
+
+    if let Some(m) = global {
+        for mut t in m.tasks {
+            t.source = Source::Global;
+            if names.contains(&t.name) {
+                errors.push(LoadError {
+                    file: t.file.clone(),
+                    class: "ShadowedTask".to_string(),
+                    message: format!(
+                        "global task {:?} is hidden by a project task of the same name",
+                        t.name
+                    ),
+                    source: Source::Global,
+                });
+            } else {
+                names.insert(t.name.clone());
+                tasks.push(t);
+            }
+        }
+        for mut e in m.errors {
+            e.source = Source::Global;
+            errors.push(e);
+        }
+    }
+
+    Metadata {
+        protocol_version: PROTOCOL_VERSION,
+        tasks,
+        errors,
+    }
+}
+
+pub fn list(roots: &Roots, json: bool) -> Result<(), RtError> {
     // In --json mode, resolution warnings must not touch stderr.
-    let ruby = RubyCommand::resolve(root, !json);
-    let (meta, _) = cache::load(root, &ruby)?;
+    let loaded = load_all(roots, !json)?;
     if json {
-        let text = serde_json::to_string_pretty(&meta)
+        let text = serde_json::to_string_pretty(&loaded.meta)
             .map_err(|e| RtError::Internal(format!("cannot serialize metadata: {e}")))?;
         println!("{text}");
     } else {
-        output::warn_load_errors(&meta);
-        output::print_list(&meta);
+        output::warn_load_errors(&loaded.meta);
+        output::print_list(&loaded.meta);
     }
     Ok(())
 }
 
-pub fn help(root: &Path, task: &str, json: bool) -> Result<(), RtError> {
-    let ruby = RubyCommand::resolve(root, !json);
-    let (meta, _) = cache::load(root, &ruby)?;
-    let found = meta
+pub fn help(roots: &Roots, task: &str, json: bool) -> Result<(), RtError> {
+    let loaded = load_all(roots, !json)?;
+    let found = loaded
+        .meta
         .find_task(task)
-        .ok_or_else(|| unknown_task(&meta, task))?;
+        .ok_or_else(|| unknown_task(&loaded.meta, task))?;
     if json {
-        let payload = json!({ "protocol_version": meta.protocol_version, "task": found });
+        let payload = json!({ "protocol_version": loaded.meta.protocol_version, "task": found });
         let text = serde_json::to_string_pretty(&payload)
             .map_err(|e| RtError::Internal(format!("cannot serialize task: {e}")))?;
         println!("{text}");
     } else {
-        output::print_help(found);
+        // Show where a global task lives so `Source: global (<path>)` is actionable.
+        let source_path = match found.source {
+            Source::Global => loaded.global.as_ref().map(|(root, _)| root.as_path()),
+            Source::Project => None,
+        };
+        output::print_help(found, source_path);
     }
     Ok(())
 }
@@ -61,15 +152,24 @@ struct TaskFailure {
     backtrace: Vec<String>,
 }
 
-pub fn run(root: &Path, task_name: &str, raw_args: &[String]) -> Result<(), RtError> {
-    let resolved = RubyCommand::resolve(root, true);
-    // `load` may fall back to plain ruby if `bundle exec` is broken; run the
-    // task with whatever actually produced the metadata.
-    let (meta, ruby) = cache::load(root, &resolved)?;
-    let task = meta
-        .find_task(task_name)
-        .ok_or_else(|| unknown_task(&meta, task_name))?;
-    let parsed = args::parse(task, raw_args)?;
+pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), RtError> {
+    let loaded = load_all(roots, true)?;
+    // Clone to end the borrow on loaded.meta before moving a root out of loaded.
+    let task = match loaded.meta.find_task(task_name) {
+        Some(t) => t.clone(),
+        None => return Err(unknown_task(&loaded.meta, task_name)),
+    };
+
+    // A task runs against the root it was discovered in, with the interpreter
+    // that produced its metadata (which may differ per root).
+    let (root, ruby) = match task.source {
+        Source::Project => loaded.project,
+        Source::Global => loaded.global,
+    }
+    .ok_or_else(|| RtError::Internal("resolved task has no backing root".to_string()))?;
+    let root = root.as_path();
+
+    let parsed = args::parse(&task, raw_args)?;
 
     let input = json!({
         "task": task_name,
@@ -79,6 +179,14 @@ pub fn run(root: &Path, task_name: &str, raw_args: &[String]) -> Result<(), RtEr
     });
     let input_bytes = serde_json::to_vec(&input)
         .map_err(|e| RtError::Internal(format!("cannot serialize task args: {e}")))?;
+
+    // A task declaring inline gems must run self-contained: bundler/inline
+    // fights an active `bundle exec`, so drop to isolated plain Ruby.
+    let ruby = if task.gems.is_empty() {
+        ruby
+    } else {
+        RubyCommand::plain_isolated()
+    };
 
     let harness = ruby::ensure_harness(root)?;
     let mut child = ruby

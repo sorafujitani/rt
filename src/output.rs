@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::{Metadata, OptionType, Task};
+use crate::metadata::{Metadata, OptionType, Source, Task};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 
@@ -37,12 +37,40 @@ pub fn print_list(meta: &Metadata) {
         println!("No tasks defined.");
         return;
     }
+    // A single common column width keeps names aligned across both sections.
     let width = meta.tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
-    let mut tasks: Vec<&Task> = meta.tasks.iter().collect();
+    let project: Vec<&Task> = meta
+        .tasks
+        .iter()
+        .filter(|t| t.source == Source::Project)
+        .collect();
+    let global: Vec<&Task> = meta
+        .tasks
+        .iter()
+        .filter(|t| t.source == Source::Global)
+        .collect();
+
+    // Label the sections only when both are present; a single source reads
+    // better as a plain list.
+    let labeled = !project.is_empty() && !global.is_empty();
+    if labeled {
+        println!("Project tasks:");
+    }
+    print_task_rows(&project, width);
+    if labeled {
+        println!();
+        println!("Global tasks:");
+    }
+    print_task_rows(&global, width);
+}
+
+fn print_task_rows(tasks: &[&Task], width: usize) {
+    let mut tasks: Vec<&&Task> = tasks.iter().collect();
     tasks.sort_by(|a, b| a.name.cmp(&b.name));
+    let color = use_color() && std::io::stdout().is_terminal();
     for t in tasks {
         let desc = t.description.as_deref().unwrap_or("");
-        if use_color() && std::io::stdout().is_terminal() {
+        if color {
             println!("  {:<width$}  {}", t.name.cyan(), desc, width = width);
         } else {
             println!("  {:<width$}  {}", t.name, desc, width = width);
@@ -50,7 +78,7 @@ pub fn print_list(meta: &Metadata) {
     }
 }
 
-pub fn print_help(task: &Task) {
+pub fn print_help(task: &Task, source_path: Option<&std::path::Path>) {
     let mut usage = format!("Usage: rt run {}", task.name);
     for p in &task.params {
         if p.required {
@@ -67,6 +95,29 @@ pub fn print_help(task: &Task) {
     if let Some(d) = &task.description {
         println!();
         println!("{d}");
+    }
+
+    match task.source {
+        Source::Global => match source_path {
+            Some(p) => println!("Source: global ({})", p.display()),
+            None => println!("Source: global"),
+        },
+        Source::Project => {}
+    }
+
+    if !task.gems.is_empty() {
+        let list: Vec<String> = task
+            .gems
+            .iter()
+            .map(|g| {
+                if g.requirements.is_empty() {
+                    g.name.clone()
+                } else {
+                    format!("{} ({})", g.name, g.requirements.join(", "))
+                }
+            })
+            .collect();
+        println!("Gems: {}", list.join(", "));
     }
 
     if !task.params.is_empty() {

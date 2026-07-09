@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Wire-format version shared with the Ruby harness. Bumped when the metadata
+/// schema changes; a mismatch invalidates any cache written by an older rt.
+pub const PROTOCOL_VERSION: u32 = 2;
+
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8,6 +12,16 @@ pub struct Metadata {
     pub tasks: Vec<Task>,
     #[serde(default)]
     pub errors: Vec<LoadError>,
+}
+
+/// Where a task was discovered. Emitted by the Rust merge step, not the
+/// harness, so it defaults to `project` when absent from harness JSON.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Source {
+    #[default]
+    Project,
+    Global,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +34,17 @@ pub struct Task {
     pub params: Vec<Param>,
     #[serde(default)]
     pub options: Vec<TaskOption>,
+    #[serde(default)]
+    pub gems: Vec<GemRequirement>,
+    #[serde(default)]
+    pub source: Source,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GemRequirement {
+    pub name: String,
+    #[serde(default)]
+    pub requirements: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +84,8 @@ pub struct LoadError {
     pub file: String,
     pub class: String,
     pub message: String,
+    #[serde(default)]
+    pub source: Source,
 }
 
 impl Metadata {
