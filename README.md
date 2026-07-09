@@ -113,19 +113,32 @@ Rules and behavior:
   that file. `rt help` shows a `Gems:` line and `rt list --json` includes a
   `gems` array on each task.
 - **Gem tasks are self-contained.** A task that declares gems runs under plain
-  Ruby with the project's Bundler context (`BUNDLE_GEMFILE`, `RUBYOPT`) removed,
-  so it does *not* see the gems from a project `Gemfile`. Declare everything the
-  task needs. Isolation is not total, though: if you launch `rt` itself under
-  `bundle exec`, the outer environment (`GEM_HOME`, `GEM_PATH`, and similar) can
-  still leak in. Full environment isolation is deferred to the Phase 3 install
-  isolation work.
+  Ruby in a scrubbed environment: `BUNDLE_GEMFILE`, `RUBYOPT`, `RUBYLIB`,
+  `GEM_HOME`, `GEM_PATH`, and every `BUNDLE_*` variable are stripped, so a task
+  behaves the same whether or not `rt` itself was launched under `bundle exec`.
+  It does *not* see the gems from a project `Gemfile`; declare everything the
+  task needs.
 - **Installation runs even under `--dry-run`,** because the task block still
   `require`s the gems and they must be resolvable first.
-- **Install target is the default gem environment** (`bundler/inline`'s normal
-  behavior); there is no per-task install isolation yet. Set `RT_GEM_SOURCE` to
-  use a gem source other than `https://rubygems.org`.
+- **Gems install into an isolated, per-Ruby cache dir,** not the default gem
+  environment, so installs never need `sudo` (relevant to the macOS system
+  Ruby) and never disturb your other gems. The location is chosen in this order:
+    1. `RT_GEM_HOME`, if set.
+    2. `$XDG_CACHE_HOME/rt/gems`, if `XDG_CACHE_HOME` is set.
+    3. `~/.cache/rt/gems`.
+
+  Under it, gems live in a `<engine>-<ruby_version>` subdirectory (native
+  extensions are ABI-specific). The directory is a cache: deleting it is safe,
+  and gems are reinstalled on the next run. Set `RT_GEM_SOURCE` to use a gem
+  source other than `https://rubygems.org`.
 - If resolution fails (missing gem, unreachable source), rt exits `74`
   (environment error) and the task does not run.
+
+The isolated gem environment resolves against your Ruby's built-in
+(bundled/default) gems too, so a gem preinstalled there — for instance one you
+added by hand under a version manager like rbenv — may be visible to a task
+without being declared. Declare every gem a task needs so it does not depend on
+that.
 
 ## Commands
 
@@ -196,10 +209,17 @@ the bundle's gems are not installed), rt warns and retries discovery once with
 plain `ruby`. The plain-Ruby path is the primary one; Bundler is only an
 optimization for projects that already use it.
 
-A task that [declares gems](#declaring-gems) is the one exception: it always
-runs under plain Ruby (honoring `RT_RUBY`) with `BUNDLE_GEMFILE` and `RUBYOPT`
-stripped, so `bundler/inline` can resolve the declared gems without fighting an
-active `bundle exec`.
+On every path, rt strips `RUBYOPT` and `RUBYLIB` from the Ruby it launches, so a
+value inherited from the surrounding shell (common under `bundle exec`) cannot
+inject a require or a load path that breaks the harness. A deliberate `RUBYOPT`
+of your own (say `--yjit`) is dropped too.
+
+A task that [declares gems](#declaring-gems) is the one exception to Bundler
+resolution: it always runs under plain Ruby (honoring `RT_RUBY`) in a fully
+scrubbed environment (`BUNDLE_GEMFILE`, `GEM_HOME`, `GEM_PATH`, and every
+`BUNDLE_*` variable removed on top of the `RUBYOPT`/`RUBYLIB` scrub above), so
+`bundler/inline` resolves the declared gems into rt's isolated gem home without
+fighting an active `bundle exec`.
 
 ## Caching
 

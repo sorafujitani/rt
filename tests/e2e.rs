@@ -476,6 +476,172 @@ fn local_rake_source() -> Option<(tempfile::TempDir, String)> {
     Some((dir, url))
 }
 
+/// Build a tiny pure-Ruby gem and serve it from a local, indexed directory so
+/// `gemfile(true)` can install it with no network at all. Returns None when the
+/// `gem` toolchain is unavailable (then the caller skips).
+fn local_dummy_gem_source() -> Option<(tempfile::TempDir, String)> {
+    let build = tempfile::tempdir().ok()?;
+    std::fs::create_dir_all(build.path().join("lib")).ok()?;
+    std::fs::write(
+        build.path().join("lib/rt_dummy.rb"),
+        "module RtDummy\n  VERSION = \"1.0.0\"\nend\n",
+    )
+    .ok()?;
+    std::fs::write(
+        build.path().join("rt_dummy.gemspec"),
+        "Gem::Specification.new do |s|\n  s.name = \"rt_dummy\"\n  s.version = \"1.0.0\"\n  s.summary = \"rt e2e dummy gem\"\n  s.authors = [\"rt\"]\n  s.files = [\"lib/rt_dummy.rb\"]\nend\n",
+    )
+    .ok()?;
+    let built = std::process::Command::new("gem")
+        .args(["build", "rt_dummy.gemspec"])
+        .current_dir(build.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !built.success() {
+        return None;
+    }
+
+    let dir = tempfile::tempdir().ok()?;
+    let gems_dir = dir.path().join("gems");
+    std::fs::create_dir_all(&gems_dir).ok()?;
+    for entry in std::fs::read_dir(build.path()).ok()? {
+        let path = entry.ok()?.path();
+        if path.extension().is_some_and(|e| e == "gem") {
+            std::fs::copy(&path, gems_dir.join(path.file_name()?)).ok()?;
+        }
+    }
+    let status = std::process::Command::new("gem")
+        .args(["generate_index", "-d"])
+        .arg(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let url = format!("file://{}", dir.path().display());
+    Some((dir, url))
+}
+
+#[test]
+fn gem_task_installs_into_isolated_home_offline() {
+    let Some((_src, url)) = local_dummy_gem_source() else {
+        eprintln!("skipping: cannot build a local dummy gem source");
+        return;
+    };
+    let staged = stage("gems_dummy");
+    let gem_home = tempfile::tempdir().unwrap();
+
+    rt().args(["run", "use_dummy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", &url)
+        .env("RT_GEM_HOME", gem_home.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dummy 1.0.0"));
+
+    // The gem lands under a single <engine>-<abi> subdir, in its gems/ folder.
+    let subdirs: Vec<PathBuf> = std::fs::read_dir(gem_home.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    assert_eq!(subdirs.len(), 1, "one per-ABI subdir expected");
+    let installed = std::fs::read_dir(subdirs[0].join("gems"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.file_name().to_string_lossy().starts_with("rt_dummy"));
+    assert!(
+        installed,
+        "rt_dummy must be installed under the isolated gem home"
+    );
+}
+
+#[test]
+fn hostile_env_does_not_break_gem_task_or_discovery() {
+    let Some((_src, url)) = local_dummy_gem_source() else {
+        eprintln!("skipping: cannot build a local dummy gem source");
+        return;
+    };
+    let staged = stage("gems_dummy");
+    let gem_home = tempfile::tempdir().unwrap();
+
+    // Discovery survives a poisoned RUBYOPT/RUBYLIB and a broken gem env.
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RUBYOPT", "-rnonexistent")
+        .env("RUBYLIB", "/nonexistent/lib")
+        .env("GEM_HOME", "/nonexistent/broken")
+        .env("GEM_PATH", "/nonexistent/broken")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("use_dummy"));
+
+    // Running the gem task survives the same hostile environment: the isolated
+    // path scrubs it all and the harness rebuilds a clean GEM_HOME.
+    rt().args(["run", "use_dummy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", &url)
+        .env("RT_GEM_HOME", gem_home.path())
+        .env("RUBYOPT", "-rnonexistent")
+        .env("RUBYLIB", "/nonexistent/lib")
+        .env("GEM_HOME", "/nonexistent/broken")
+        .env("GEM_PATH", "/nonexistent/broken")
+        .env("BUNDLE_GEMFILE", "/nonexistent/Gemfile")
+        .env("BUNDLE_PATH", "/nonexistent/bundle")
+        // Variables a real `bundle exec` exports into its child, which must not
+        // redirect the isolated install: this checks the README's "behaves the
+        // same under bundle exec" claim against an actual bundle-shaped env.
+        .env("BUNDLER_VERSION", "2.5.0")
+        .env("BUNDLER_ORIG_GEM_HOME", "/nonexistent/orig-gem-home")
+        .env("BUNDLER_SETUP", "/nonexistent/setup")
+        .env("RUBYGEMS_GEMDEPS", "/nonexistent/Gemfile")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("dummy 1.0.0"));
+}
+
+#[test]
+fn parallel_gem_installs_share_home_without_corruption() {
+    let Some((_src, url)) = local_dummy_gem_source() else {
+        eprintln!("skipping: cannot build a local dummy gem source");
+        return;
+    };
+    let staged = stage("gems_dummy");
+    let gem_home = tempfile::tempdir().unwrap();
+    let bin = assert_cmd::cargo::cargo_bin("rt");
+
+    // Two processes race the first install of the same gem into one shared home.
+    // The harness's exclusive lock must serialize them so both exit 0 rather than
+    // colliding in rubygems' installer.
+    let spawn = || {
+        std::process::Command::new(&bin)
+            .args(["run", "use_dummy"])
+            .current_dir(staged.path())
+            .env("RT_CONFIG_DIR", empty_config())
+            .env_remove("RT_ROOT")
+            .env("RT_GEM_SOURCE", &url)
+            .env("RT_GEM_HOME", gem_home.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut a = spawn();
+    let mut b = spawn();
+    let ra = a.wait().unwrap();
+    let rb = b.wait().unwrap();
+    assert!(ra.success(), "first parallel install should exit 0");
+    assert!(rb.success(), "second parallel install should exit 0");
+}
+
 #[test]
 fn gem_task_lists_gems_in_json_and_help() {
     let staged = stage("gems");
@@ -510,10 +676,12 @@ fn gem_task_runs_with_offline_local_source() {
         return;
     };
     let staged = stage("gems");
+    let gem_home = tempfile::tempdir().unwrap();
     rt().args(["run", "with_rake"])
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env("RT_GEM_SOURCE", &url)
+        .env("RT_GEM_HOME", gem_home.path())
         .assert()
         .success()
         .stdout(predicates::str::contains("rake"));
@@ -544,24 +712,12 @@ fn top_level_require_of_declared_gem_gets_a_hint() {
 #[ignore = "installs a real gem from rubygems.org; run with `cargo test -- --ignored`"]
 fn gem_task_installs_a_real_gem() {
     let staged = stage("gems_real");
-    // Install into a throwaway GEM_HOME so the run needs no sudo and leaves no
-    // trace; GEM_PATH still exposes the system gems (bundler itself).
+    // A throwaway isolated gem home: the run needs no sudo and leaves no trace.
     let gem_home = tempfile::tempdir().unwrap();
-    let sys_gem_dir = String::from_utf8(
-        std::process::Command::new("ruby")
-            .args(["-e", "print Gem.dir"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let gem_path = format!("{}:{}", gem_home.path().display(), sys_gem_dir);
-
     rt().args(["run", "paint_demo"])
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
-        .env("GEM_HOME", gem_home.path())
-        .env("GEM_PATH", gem_path)
+        .env("RT_GEM_HOME", gem_home.path())
         .assert()
         .success()
         .stdout(predicates::str::contains("colored"));
@@ -575,11 +731,13 @@ fn empty_gem_source_falls_back_to_default() {
     // runs offline, so the fallback may fail to fetch — but never with the blank
     // -source symptom, which is the regression we guard against.
     let staged = stage("gems");
+    let gem_home = tempfile::tempdir().unwrap();
     let assert = rt()
         .args(["run", "with_rake"])
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env("RT_GEM_SOURCE", "")
+        .env("RT_GEM_HOME", gem_home.path())
         .assert();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(
@@ -591,12 +749,14 @@ fn empty_gem_source_falls_back_to_default() {
 #[test]
 fn gem_install_failure_is_environment_error() {
     let staged = stage("gems");
+    let gem_home = tempfile::tempdir().unwrap();
     // A nonexistent gem plus an unreachable source: bundler cannot fetch specs,
     // so resolution fails and the harness exits 74 (environment error).
     rt().args(["run", "needs_missing"])
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env("RT_GEM_SOURCE", "http://127.0.0.1:1")
+        .env("RT_GEM_HOME", gem_home.path())
         .assert()
         .failure()
         .code(74)
@@ -608,9 +768,11 @@ fn malformed_gem_requirement_is_environment_error() {
     // A bad version string fails resolution locally (no network needed) and
     // must still map to the deterministic environment exit code, not a task bug.
     let staged = stage("gems");
+    let gem_home = tempfile::tempdir().unwrap();
     rt().args(["run", "bad_version"])
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
+        .env("RT_GEM_HOME", gem_home.path())
         .assert()
         .failure()
         .code(74)
