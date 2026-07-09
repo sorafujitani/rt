@@ -1,9 +1,18 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// A process-lifetime empty directory used as the default config dir so tests
+/// never pick up the real ~/.config/rt. Held in a static so it outlives every
+/// test (statics are not dropped, so the tempdir survives to process exit).
+fn empty_config() -> &'static Path {
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().unwrap()).path()
 }
 
 /// Copy a fixture into a fresh tempdir so cache writes don't touch the repo.
@@ -29,7 +38,11 @@ fn copy_dir(src: &Path, dst: &Path) {
 }
 
 fn rt() -> Command {
-    Command::cargo_bin("rt").unwrap()
+    let mut cmd = Command::cargo_bin("rt").unwrap();
+    // Isolate every test from the real user config dir so global-task discovery
+    // finds nothing unless a test opts in with its own RT_CONFIG_DIR.
+    cmd.env("RT_CONFIG_DIR", empty_config());
+    cmd
 }
 
 #[test]
