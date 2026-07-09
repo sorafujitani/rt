@@ -819,6 +819,122 @@ fn help_unknown_task_is_usage_error() {
 }
 
 #[test]
+fn tools_json_emits_catalog_and_filters_one_task() {
+    let staged = stage("params");
+    let all = rt()
+        .args(["tools", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(all.status.success());
+    assert!(all.stderr.is_empty());
+
+    let catalog: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    assert_eq!(catalog["schema_version"], 1);
+    assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["tools"][0]["task"], "deploy");
+    assert_eq!(
+        catalog["tools"][0]["input_schema"]["properties"]["environment"]["enum"],
+        serde_json::json!(["staging", "production"])
+    );
+    assert_eq!(
+        catalog["tools"][0]["input_schema"]["required"],
+        serde_json::json!(["environment"])
+    );
+    assert_eq!(
+        catalog["tools"][0]["input_schema"]["additionalProperties"],
+        false
+    );
+    assert!(catalog["errors"].as_array().unwrap().is_empty());
+
+    let filtered = rt()
+        .args(["tools", "--json", "deploy"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(filtered.status.success());
+    assert!(filtered.stderr.is_empty());
+    let catalog: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
+    assert_eq!(catalog["schema_version"], 1);
+    assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(catalog["tools"][0]["task"], "deploy");
+}
+
+#[test]
+fn tools_json_unknown_task_is_usage_error() {
+    let staged = stage("basic");
+    rt().args(["tools", "--json", "nope"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stdout(predicates::str::is_empty())
+        .stderr(predicates::str::contains("unknown task"));
+}
+
+#[test]
+fn tools_requires_json_flag() {
+    let staged = stage("basic");
+    rt().arg("tools")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("--json"));
+}
+
+#[test]
+fn tools_json_merges_project_and_global_tasks() {
+    let project = stage("basic");
+    let global = stage("global");
+    let out = rt()
+        .args(["tools", "--json"])
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let catalog: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tools = catalog["tools"].as_array().unwrap();
+    let greets: Vec<_> = tools
+        .iter()
+        .filter(|tool| tool["task"] == "greet")
+        .collect();
+    assert_eq!(greets.len(), 1);
+    assert_eq!(greets[0]["source"], "project");
+    assert!(tools.iter().any(|tool| tool["task"] == "ggreet"));
+    assert!(catalog["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|error| error["class"] == "ShadowedTask"));
+}
+
+#[test]
+fn tools_json_includes_load_errors_without_stderr() {
+    let staged = stage("broken");
+    let out = rt()
+        .args(["tools", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let catalog: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!catalog["tools"].as_array().unwrap().is_empty());
+    assert!(!catalog["errors"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn generated_gitignore_anchors_patterns_to_the_home() {
     let staged = stage("basic");
     rt().arg("list")

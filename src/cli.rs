@@ -28,6 +28,14 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Emit tool definitions derived from task metadata
+    Tools {
+        /// Emit the tool catalog as JSON on stdout
+        #[arg(long, required = true)]
+        json: bool,
+        /// Limit the catalog to one task
+        task: Option<String>,
+    },
     /// Run a task
     Run {
         /// Emit a machine-readable execution result on stdout

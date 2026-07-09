@@ -8,7 +8,7 @@ mod project;
 mod ruby;
 mod run_result;
 mod runner;
-pub mod tool_catalog;
+mod tool_catalog;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -98,6 +98,8 @@ fn dispatch(command: Command) -> Result<(), RtError> {
     match command {
         Command::List { json } => runner::list(&roots, json),
         Command::Help { task, json } => runner::help(&roots, &task, json),
+        Command::Tools { json: true, task } => runner::tools(&roots, task.as_deref()),
+        Command::Tools { json: false, .. } => unreachable!("--json is required by clap"),
         Command::Run {
             json: false,
             task,
