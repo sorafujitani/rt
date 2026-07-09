@@ -28,10 +28,10 @@ fn main() {
 }
 
 fn dispatch(cli: Cli) -> Result<(), RtError> {
-    let root = project::find_root()?;
+    let roots = project::find_roots()?;
     match cli.command {
-        Command::List { json } => runner::list(&root, json),
-        Command::Help { task, json } => runner::help(&root, &task, json),
-        Command::Run { task, args } => runner::run(&root, &task, &args),
+        Command::List { json } => runner::list(&roots, json),
+        Command::Help { task, json } => runner::help(&roots, &task, json),
+        Command::Run { task, args } => runner::run(&roots, &task, &args),
     }
 }

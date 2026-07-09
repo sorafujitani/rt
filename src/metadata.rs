@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+/// Wire-format version shared with the Ruby harness. Bumped when the metadata
+/// schema changes; a mismatch invalidates any cache written by an older rt.
+pub const PROTOCOL_VERSION: u32 = 2;
+
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.
 #[derive(Debug, Clone, Serialize, Deserialize)]

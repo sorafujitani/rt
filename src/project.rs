@@ -1,13 +1,41 @@
 use crate::error::RtError;
 use std::path::{Path, PathBuf};
 
+/// The task roots rt will search. A root is a directory holding a `tasks/`
+/// directory (or `rt.yml`). Either may be absent; both absent is a usage error.
+#[derive(Debug, Clone)]
+pub struct Roots {
+    pub project: Option<PathBuf>,
+    pub global: Option<PathBuf>,
+}
+
+/// Resolve both the project root (walked up from the cwd, or `RT_ROOT`) and the
+/// global root (`<config_dir>/` when it contains a `tasks/` directory). At least
+/// one must exist.
+pub fn find_roots() -> Result<Roots, RtError> {
+    let project = find_project()?;
+    let global = find_global();
+
+    if project.is_none() && global.is_none() {
+        return Err(RtError::Usage(
+            "no rt project found: expected a tasks/ directory (or rt.yml) here or in a parent \
+             directory. To define machine-wide tasks, create a tasks/ directory under your rt \
+             config dir (~/.config/rt or $RT_CONFIG_DIR)."
+                .to_string(),
+        ));
+    }
+    Ok(Roots { project, global })
+}
+
 /// Locate the project root by walking upward looking for `rt.yml` or a
-/// `tasks/` directory. `RT_ROOT` overrides discovery when set.
-pub fn find_root() -> Result<PathBuf, RtError> {
+/// `tasks/` directory. `RT_ROOT` overrides discovery; an invalid `RT_ROOT` is
+/// an error, but a plain "not found" walk yields `None` (global tasks may
+/// still apply).
+fn find_project() -> Result<Option<PathBuf>, RtError> {
     if let Some(explicit) = std::env::var_os("RT_ROOT") {
         let root = PathBuf::from(explicit);
         if is_root(&root) {
-            return Ok(root);
+            return Ok(Some(root));
         }
         return Err(RtError::Usage(format!(
             "RT_ROOT is set to {} but no tasks/ directory or rt.yml was found there",
@@ -20,18 +48,38 @@ pub fn find_root() -> Result<PathBuf, RtError> {
     let mut dir = start.as_path();
     loop {
         if is_root(dir) {
-            return Ok(dir.to_path_buf());
+            return Ok(Some(dir.to_path_buf()));
         }
         match dir.parent() {
             Some(parent) => dir = parent,
-            None => break,
+            None => return Ok(None),
         }
     }
+}
 
-    Err(RtError::Usage(
-        "no rt project found: expected a tasks/ directory (or rt.yml) here or in a parent directory"
-            .to_string(),
-    ))
+/// The global root is the config dir itself when it holds a `tasks/` directory.
+fn find_global() -> Option<PathBuf> {
+    let dir = config_dir()?;
+    if dir.join("tasks").is_dir() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// Resolution order: `RT_CONFIG_DIR` -> `$XDG_CONFIG_HOME/rt` -> `~/.config/rt`.
+fn config_dir() -> Option<PathBuf> {
+    if let Some(explicit) = non_empty_env("RT_CONFIG_DIR") {
+        return Some(PathBuf::from(explicit));
+    }
+    if let Some(xdg) = non_empty_env("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("rt"));
+    }
+    non_empty_env("HOME").map(|home| PathBuf::from(home).join(".config").join("rt"))
+}
+
+fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(key).filter(|v| !v.is_empty())
 }
 
 fn is_root(dir: &Path) -> bool {

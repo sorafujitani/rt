@@ -37,12 +37,40 @@ pub fn print_list(meta: &Metadata) {
         println!("No tasks defined.");
         return;
     }
+    // A single common column width keeps names aligned across both sections.
     let width = meta.tasks.iter().map(|t| t.name.len()).max().unwrap_or(0);
-    let mut tasks: Vec<&Task> = meta.tasks.iter().collect();
+    let project: Vec<&Task> = meta
+        .tasks
+        .iter()
+        .filter(|t| t.source == Source::Project)
+        .collect();
+    let global: Vec<&Task> = meta
+        .tasks
+        .iter()
+        .filter(|t| t.source == Source::Global)
+        .collect();
+
+    // Label the sections only when both are present; a single source reads
+    // better as a plain list.
+    let labeled = !project.is_empty() && !global.is_empty();
+    if labeled {
+        println!("Project tasks:");
+    }
+    print_task_rows(&project, width);
+    if labeled {
+        println!();
+        println!("Global tasks:");
+    }
+    print_task_rows(&global, width);
+}
+
+fn print_task_rows(tasks: &[&Task], width: usize) {
+    let mut tasks: Vec<&&Task> = tasks.iter().collect();
     tasks.sort_by(|a, b| a.name.cmp(&b.name));
+    let color = use_color() && std::io::stdout().is_terminal();
     for t in tasks {
         let desc = t.description.as_deref().unwrap_or("");
-        if use_color() && std::io::stdout().is_terminal() {
+        if color {
             println!("  {:<width$}  {}", t.name.cyan(), desc, width = width);
         } else {
             println!("  {:<width$}  {}", t.name, desc, width = width);

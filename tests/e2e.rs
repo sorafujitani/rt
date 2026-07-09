@@ -519,6 +519,126 @@ fn gem_install_failure_is_environment_error() {
 }
 
 #[test]
+fn global_tasks_list_and_run_outside_any_project() {
+    let global = stage("global");
+    let cwd = tempfile::tempdir().unwrap(); // no project here or above
+
+    rt().arg("list")
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("ggreet"));
+
+    rt().args(["run", "ggreet"])
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("hello from global"));
+
+    // The global root keeps its own cache/harness under <config_dir>/.rt.
+    assert!(global.path().join(".rt/cache.json").is_file());
+    let harness = std::fs::read_dir(global.path().join(".rt"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|e| e.file_name().to_string_lossy().starts_with("harness-"));
+    assert!(harness, "global harness should live under <config_dir>/.rt");
+}
+
+#[test]
+fn project_and_global_tasks_list_in_two_sections() {
+    let project = stage("basic");
+    let global = stage("global");
+    let assert = rt()
+        .arg("list")
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Project tasks:"))
+        .stdout(predicates::str::contains("Global tasks:"))
+        .stdout(predicates::str::contains("greet"))
+        .stdout(predicates::str::contains("ggreet"));
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    // Project section precedes the global one.
+    assert!(stdout.find("Project tasks:").unwrap() < stdout.find("Global tasks:").unwrap());
+}
+
+#[test]
+fn project_task_shadows_global_of_same_name() {
+    let project = stage("basic");
+    let global = stage("global");
+
+    // The project's greet wins the name collision.
+    rt().args(["run", "greet", "--name", "sora"])
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Hello, sora!"))
+        .stdout(predicates::str::contains("GLOBAL GREET").not());
+
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(project.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tasks = value["tasks"].as_array().unwrap();
+
+    // Names are unique: exactly one "greet", and it is the project one.
+    let greets: Vec<&serde_json::Value> = tasks.iter().filter(|t| t["name"] == "greet").collect();
+    assert_eq!(greets.len(), 1);
+    assert_eq!(greets[0]["source"], "project");
+
+    // The unique global task survives and is tagged global.
+    let ggreet = tasks.iter().find(|t| t["name"] == "ggreet").unwrap();
+    assert_eq!(ggreet["source"], "global");
+
+    // The hidden global greet is reported as a ShadowedTask warning.
+    let errors = value["errors"].as_array().unwrap();
+    assert!(errors
+        .iter()
+        .any(|e| e["class"] == "ShadowedTask" && e["source"] == "global"));
+}
+
+#[test]
+fn protocol_version_bump_invalidates_old_cache() {
+    let staged = stage("basic");
+    let rt_dir = staged.path().join(".rt");
+    std::fs::create_dir_all(&rt_dir).unwrap();
+    // A well-formed cache from an older protocol: it names a task that does not
+    // exist. If honored, "ghost" would appear; a correct bump ignores it.
+    let stale = serde_json::json!({
+        "cache_version": 1,
+        "ruby_command": "ruby",
+        "files": {},
+        "metadata": {
+            "protocol_version": 1,
+            "tasks": [{ "name": "ghost", "file": "tasks/ghost.rb" }],
+            "errors": []
+        }
+    });
+    std::fs::write(rt_dir.join("cache.json"), stale.to_string()).unwrap();
+
+    rt().arg("list")
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("greet"))
+        .stdout(predicates::str::contains("ghost").not());
+}
+
+#[test]
 fn broken_task_json_puts_errors_in_json_not_stderr() {
     let staged = stage("broken");
     let out = rt()

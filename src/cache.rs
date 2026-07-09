@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::Metadata;
+use crate::metadata::{Metadata, PROTOCOL_VERSION};
 use crate::ruby::{self, RubyCommand};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -8,7 +8,6 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const CACHE_VERSION: u32 = 1;
-const PROTOCOL_VERSION: u32 = 2;
 
 /// Per-file fingerprint: mtime seconds, mtime nanoseconds, and byte size. Size
 /// is included because some filesystems only expose 1-second mtime resolution,
