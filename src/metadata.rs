@@ -12,17 +12,12 @@ pub struct Metadata {
 
 /// Where a task was discovered. Emitted by the Rust merge step, not the
 /// harness, so it defaults to `project` when absent from harness JSON.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Source {
+    #[default]
     Project,
     Global,
-}
-
-impl Default for Source {
-    fn default() -> Self {
-        Source::Project
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

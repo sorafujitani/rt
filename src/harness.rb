@@ -291,6 +291,32 @@ def emit_metadata(root)
   puts JSON.generate(payload)
 end
 
+# Resolve a task file's declared gems with bundler/inline before the block
+# runs. Nothing may reach stdout (agents pipe task stdout to tools like jq), so
+# any Bundler chatter is redirected to stderr. Install failure is an
+# environment error (exit 74), matching rt's exit-code contract.
+def install_gems(gems)
+  return if gems.nil? || gems.empty?
+
+  require "bundler/inline"
+  summary = gems.map { |g| [g["name"], *g["requirements"]].join(" ").strip }.join(", ")
+  warn "rt: resolving gems (#{summary})"
+
+  original = $stdout
+  $stdout = $stderr
+  begin
+    gemfile(true, quiet: true) do
+      source(ENV["RT_GEM_SOURCE"] || "https://rubygems.org")
+      gems.each { |g| gem(g["name"], *g["requirements"]) }
+    end
+  ensure
+    $stdout = original
+  end
+rescue Gem::Exception, Bundler::BundlerError, StandardError => e
+  warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
+  exit 74
+end
+
 def run_task(root, name)
   input = $stdin.read
   args = input.empty? ? {} : JSON.parse(input)
@@ -305,6 +331,10 @@ def run_task(root, name)
     warn "rt: task #{name.inspect} not found while running"
     exit 70
   end
+
+  # Installed even under --dry-run: the task block still `require`s these gems,
+  # so they must be resolvable before the block runs.
+  install_gems(RT.gems_for(task.file))
 
   ctx = RT::Context.new(params: params, options: options, dry_run: dry_run)
   begin

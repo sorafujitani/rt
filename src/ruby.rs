@@ -15,6 +15,10 @@ pub struct RubyCommand {
     program: String,
     prep_args: Vec<String>,
     bundle_gemfile: Option<PathBuf>,
+    /// When set, the child runs outside any Bundler context (BUNDLE_GEMFILE and
+    /// RUBYOPT stripped). Used for inline-gem tasks so bundler/inline does not
+    /// collide with an active `bundle exec`.
+    isolated: bool,
 }
 
 impl RubyCommand {
@@ -27,6 +31,7 @@ impl RubyCommand {
                 program: explicit.to_string_lossy().into_owned(),
                 prep_args: Vec::new(),
                 bundle_gemfile: None,
+                isolated: false,
             };
         }
 
@@ -37,6 +42,7 @@ impl RubyCommand {
                     program: "bundle".to_string(),
                     prep_args: vec!["exec".to_string(), "ruby".to_string()],
                     bundle_gemfile: Some(gemfile),
+                    isolated: false,
                 };
             }
             if warn {
@@ -55,6 +61,22 @@ impl RubyCommand {
             program: "ruby".to_string(),
             prep_args: Vec::new(),
             bundle_gemfile: None,
+            isolated: false,
+        }
+    }
+
+    /// Plain Ruby with any inherited Bundler context stripped, so bundler/inline
+    /// can resolve a task's declared gems without fighting an active
+    /// `bundle exec`. Honors RT_RUBY for interpreter selection.
+    pub fn plain_isolated() -> Self {
+        let program = std::env::var_os("RT_RUBY")
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "ruby".to_string());
+        RubyCommand {
+            program,
+            prep_args: Vec::new(),
+            bundle_gemfile: None,
+            isolated: true,
         }
     }
 
@@ -83,6 +105,10 @@ impl RubyCommand {
         cmd.args(&self.prep_args);
         if let Some(g) = &self.bundle_gemfile {
             cmd.env("BUNDLE_GEMFILE", g);
+        }
+        if self.isolated {
+            cmd.env_remove("BUNDLE_GEMFILE");
+            cmd.env_remove("RUBYOPT");
         }
         cmd.arg(harness);
         cmd

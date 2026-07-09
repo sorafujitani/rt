@@ -418,6 +418,106 @@ fn second_list_hits_cache_without_launching_ruby() {
         .stdout(predicates::str::contains("greet"));
 }
 
+/// Assemble a self-contained offline gem source from the machine's cached rake
+/// `.gem` files so `gemfile(true)` can resolve without any network. Returns
+/// None when no rake gem is cached (then the caller skips).
+fn local_rake_source() -> Option<(tempfile::TempDir, String)> {
+    let listing = std::process::Command::new("ruby")
+        .args([
+            "-e",
+            "Gem.path.each { |p| Dir.glob(File.join(p, 'cache', 'rake-*.gem')).each { |g| puts g } }",
+        ])
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&listing.stdout);
+    let gems: Vec<String> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    if gems.is_empty() {
+        return None;
+    }
+    let dir = tempfile::tempdir().ok()?;
+    let gems_dir = dir.path().join("gems");
+    std::fs::create_dir_all(&gems_dir).ok()?;
+    for g in &gems {
+        let name = Path::new(g).file_name()?;
+        std::fs::copy(g, gems_dir.join(name)).ok()?;
+    }
+    let status = std::process::Command::new("gem")
+        .args(["generate_index", "-d"])
+        .arg(dir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let url = format!("file://{}", dir.path().display());
+    Some((dir, url))
+}
+
+#[test]
+fn gem_task_lists_gems_in_json_and_help() {
+    let staged = stage("gems");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let task = value["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "with_rake")
+        .unwrap();
+    assert_eq!(task["gems"][0]["name"], "rake");
+
+    rt().args(["help", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Gems: rake"));
+}
+
+#[test]
+fn gem_task_runs_with_offline_local_source() {
+    let Some((_src, url)) = local_rake_source() else {
+        eprintln!("skipping: no cached rake gem to build an offline source");
+        return;
+    };
+    let staged = stage("gems");
+    rt().args(["run", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", &url)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("rake"));
+}
+
+#[test]
+fn gem_install_failure_is_environment_error() {
+    let staged = stage("gems");
+    // A nonexistent gem plus an unreachable source: bundler cannot fetch specs,
+    // so resolution fails and the harness exits 74 (environment error).
+    rt().args(["run", "needs_missing"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", "http://127.0.0.1:1")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(predicates::str::contains("resolve gems"));
+}
+
 #[test]
 fn broken_task_json_puts_errors_in_json_not_stderr() {
     let staged = stage("broken");

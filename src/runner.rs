@@ -80,6 +80,14 @@ pub fn run(root: &Path, task_name: &str, raw_args: &[String]) -> Result<(), RtEr
     let input_bytes = serde_json::to_vec(&input)
         .map_err(|e| RtError::Internal(format!("cannot serialize task args: {e}")))?;
 
+    // A task declaring inline gems must run self-contained: bundler/inline
+    // fights an active `bundle exec`, so drop to isolated plain Ruby.
+    let ruby = if task.gems.is_empty() {
+        ruby
+    } else {
+        RubyCommand::plain_isolated()
+    };
+
     let harness = ruby::ensure_harness(root)?;
     let mut child = ruby
         .command(&harness)
