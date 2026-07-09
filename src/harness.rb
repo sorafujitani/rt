@@ -253,7 +253,13 @@ def load_tasks(root)
         message: "task file called exit(#{e.status}) while loading"
       )
     rescue ScriptError, StandardError => e
-      RT.registry.record_error(file: rel, klass: e.class.name, message: e.message)
+      message = e.message
+      # A gem required at the top level fails discovery (gems are only
+      # installed at run time). Point the author at the fix.
+      if e.is_a?(LoadError) && !RT.file_gems.fetch(rel, []).empty?
+        message += " (declared gems must be required inside the task block, not at the top level)"
+      end
+      RT.registry.record_error(file: rel, klass: e.class.name, message: message)
     end
   end
   RT.current_file = nil
@@ -312,7 +318,10 @@ def install_gems(gems)
   ensure
     $stdout = original
   end
-rescue Gem::Exception, Bundler::BundlerError, StandardError => e
+# Resolution failure is an environment problem, not a task bug: named Bundler
+# and RubyGems errors plus the network/OS errors a fetch can raise all map to
+# exit 74. Other exceptions propagate as genuine bugs.
+rescue Gem::Exception, Bundler::BundlerError, SocketError, SystemCallError => e
   warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
   exit 74
 end

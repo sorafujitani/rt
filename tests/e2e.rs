@@ -504,6 +504,54 @@ fn gem_task_runs_with_offline_local_source() {
 }
 
 #[test]
+fn top_level_require_of_declared_gem_gets_a_hint() {
+    let staged = stage("gems_toplevel");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let errors = value["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| {
+        e["class"] == "LoadError"
+            && e["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("inside the task block")
+    }));
+}
+
+#[test]
+#[ignore = "installs a real gem from rubygems.org; run with `cargo test -- --ignored`"]
+fn gem_task_installs_a_real_gem() {
+    let staged = stage("gems_real");
+    // Install into a throwaway GEM_HOME so the run needs no sudo and leaves no
+    // trace; GEM_PATH still exposes the system gems (bundler itself).
+    let gem_home = tempfile::tempdir().unwrap();
+    let sys_gem_dir = String::from_utf8(
+        std::process::Command::new("ruby")
+            .args(["-e", "print Gem.dir"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let gem_path = format!("{}:{}", gem_home.path().display(), sys_gem_dir);
+
+    rt().args(["run", "paint_demo"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("GEM_HOME", gem_home.path())
+        .env("GEM_PATH", gem_path)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("colored"));
+}
+
+#[test]
 fn gem_install_failure_is_environment_error() {
     let staged = stage("gems");
     // A nonexistent gem plus an unreachable source: bundler cannot fetch specs,
