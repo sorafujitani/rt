@@ -336,12 +336,28 @@ fn broken_bundle_exec_falls_back_to_plain_ruby() {
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env_remove("RT_RUBY")
-        .env("PATH", path)
+        .env("PATH", &path)
         .assert()
         .success()
         .stdout(predicates::str::contains("greet"));
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("plain ruby"), "expected fallback warning");
+
+    // In --json mode the same fallback must stay silent on stderr.
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "stderr must be clean in --json mode, got: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]
@@ -567,6 +583,20 @@ fn gem_install_failure_is_environment_error() {
 }
 
 #[test]
+fn malformed_gem_requirement_is_environment_error() {
+    // A bad version string fails resolution locally (no network needed) and
+    // must still map to the deterministic environment exit code, not a task bug.
+    let staged = stage("gems");
+    rt().args(["run", "bad_version"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(predicates::str::contains("resolve gems"));
+}
+
+#[test]
 fn global_tasks_list_and_run_outside_any_project() {
     let global = stage("global");
     let cwd = tempfile::tempdir().unwrap(); // no project here or above
@@ -586,6 +616,15 @@ fn global_tasks_list_and_run_outside_any_project() {
         .assert()
         .success()
         .stdout(predicates::str::contains("hello from global"));
+
+    // `rt help` names the source and, for a global task, its config dir path.
+    rt().args(["help", "ggreet"])
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Source: global ("));
 
     // The global root keeps its own cache/harness under <config_dir>/.rt.
     assert!(global.path().join(".rt/cache.json").is_file());

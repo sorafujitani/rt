@@ -78,7 +78,7 @@ fn print_task_rows(tasks: &[&Task], width: usize) {
     }
 }
 
-pub fn print_help(task: &Task) {
+pub fn print_help(task: &Task, source_path: Option<&std::path::Path>) {
     let mut usage = format!("Usage: rt run {}", task.name);
     for p in &task.params {
         if p.required {
@@ -98,7 +98,10 @@ pub fn print_help(task: &Task) {
     }
 
     match task.source {
-        Source::Global => println!("Source: global"),
+        Source::Global => match source_path {
+            Some(p) => println!("Source: global ({})", p.display()),
+            None => println!("Source: global"),
+        },
         Source::Project => {}
     }
 

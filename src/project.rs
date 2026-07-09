@@ -14,7 +14,16 @@ pub struct Roots {
 /// one must exist.
 pub fn find_roots() -> Result<Roots, RtError> {
     let project = find_project()?;
-    let global = find_global();
+    let mut global = find_global();
+
+    // Running from inside the config dir would make project and global the same
+    // directory, discovering every task twice and reporting them all as shadowed.
+    // Collapse to a single (project) root in that case.
+    if let (Some(p), Some(g)) = (&project, &global) {
+        if same_dir(p, g) {
+            global = None;
+        }
+    }
 
     if project.is_none() && global.is_none() {
         return Err(RtError::Usage(
@@ -84,6 +93,15 @@ fn non_empty_env(key: &str) -> Option<std::ffi::OsString> {
 
 fn is_root(dir: &Path) -> bool {
     dir.join("tasks").is_dir() || dir.join("rt.yml").is_file()
+}
+
+/// Whether two paths point at the same directory, comparing canonical forms
+/// when available and falling back to a literal comparison.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 #[cfg(test)]

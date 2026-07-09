@@ -26,7 +26,11 @@ struct Cache {
 /// Return metadata from cache when nothing relevant changed; otherwise run
 /// discovery and refresh the cache. Returns the interpreter that produced the
 /// metadata (which may differ from `ruby` if a `bundle exec` fallback fired).
-pub fn load(root: &Path, ruby: &RubyCommand) -> Result<(Metadata, RubyCommand), RtError> {
+pub fn load(
+    root: &Path,
+    ruby: &RubyCommand,
+    warn: bool,
+) -> Result<(Metadata, RubyCommand), RtError> {
     let current = scan_files(root)?;
     let ruby_desc = ruby.describe();
 
@@ -36,7 +40,7 @@ pub fn load(root: &Path, ruby: &RubyCommand) -> Result<(Metadata, RubyCommand), 
         }
     }
 
-    let (metadata, used) = ruby::discover_with_fallback(root, ruby)?;
+    let (metadata, used) = ruby::discover_with_fallback(root, ruby, warn)?;
     write(
         root,
         &Cache {

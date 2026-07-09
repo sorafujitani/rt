@@ -304,10 +304,21 @@ end
 def install_gems(gems)
   return if gems.nil? || gems.empty?
 
-  require "bundler/inline"
+  # Require bundler/inline before the main rescue so its absence (a broken Ruby)
+  # is reported as exit 74 rather than raising a NameError when the rescue tries
+  # to name Bundler::BundlerError on a Ruby without Bundler loaded.
+  begin
+    require "bundler/inline"
+  rescue LoadError => e
+    warn "rt: cannot load bundler/inline to resolve gems: #{e.message}"
+    exit 74
+  end
+
   summary = gems.map { |g| [g["name"], *g["requirements"]].join(" ").strip }.join(", ")
   warn "rt: resolving gems (#{summary})"
 
+  # Nothing may reach stdout (agents pipe task stdout to tools like jq), so any
+  # Bundler chatter is redirected to stderr for the duration of the install.
   original = $stdout
   $stdout = $stderr
   begin
@@ -315,15 +326,15 @@ def install_gems(gems)
       source(ENV["RT_GEM_SOURCE"] || "https://rubygems.org")
       gems.each { |g| gem(g["name"], *g["requirements"]) }
     end
+  # Resolution failure is an environment problem, not a task bug, so any failure
+  # maps to exit 74: missing gems, unreachable/invalid sources, network and OS
+  # errors, and malformed version requirements all surface as StandardError.
+  rescue StandardError => e
+    warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
+    exit 74
   ensure
     $stdout = original
   end
-# Resolution failure is an environment problem, not a task bug: named Bundler
-# and RubyGems errors plus the network/OS errors a fetch can raise all map to
-# exit 74. Other exceptions propagate as genuine bugs.
-rescue Gem::Exception, Bundler::BundlerError, SocketError, SystemCallError => e
-  warn "rt: failed to resolve gems (#{e.class}): #{e.message}"
-  exit 74
 end
 
 def run_task(root, name)

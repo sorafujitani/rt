@@ -27,7 +27,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut project = None;
     if let Some(root) = &roots.project {
         let ruby = RubyCommand::resolve(root, warn);
-        let (meta, used) = cache::load(root, &ruby)?;
+        let (meta, used) = cache::load(root, &ruby, warn)?;
         project_meta = Some(meta);
         project = Some((root.clone(), used));
     }
@@ -36,7 +36,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut global = None;
     if let Some(root) = &roots.global {
         let ruby = RubyCommand::resolve(root, warn);
-        let (meta, used) = cache::load(root, &ruby)?;
+        let (meta, used) = cache::load(root, &ruby, warn)?;
         global_meta = Some(meta);
         global = Some((root.clone(), used));
     }
@@ -125,7 +125,12 @@ pub fn help(roots: &Roots, task: &str, json: bool) -> Result<(), RtError> {
             .map_err(|e| RtError::Internal(format!("cannot serialize task: {e}")))?;
         println!("{text}");
     } else {
-        output::print_help(found);
+        // Show where a global task lives so `Source: global (<path>)` is actionable.
+        let source_path = match found.source {
+            Source::Global => loaded.global.as_ref().map(|(root, _)| root.as_path()),
+            Source::Project => None,
+        };
+        output::print_help(found, source_path);
     }
     Ok(())
 }

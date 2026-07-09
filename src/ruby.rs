@@ -161,13 +161,16 @@ pub fn ensure_harness(root: &Path) -> Result<PathBuf, RtError> {
 pub fn discover_with_fallback(
     root: &Path,
     ruby: &RubyCommand,
+    warn: bool,
 ) -> Result<(Metadata, RubyCommand), RtError> {
     match discover(root, ruby) {
         Ok(meta) => Ok((meta, ruby.clone())),
         Err(err) if ruby.is_bundle() => {
-            output::print_warning(&format!(
-                "`bundle exec ruby` failed ({err}); retrying with plain ruby"
-            ));
+            if warn {
+                output::print_warning(&format!(
+                    "`bundle exec ruby` failed ({err}); retrying with plain ruby"
+                ));
+            }
             let plain = RubyCommand::plain();
             let meta = discover(root, &plain)?;
             Ok((meta, plain))
