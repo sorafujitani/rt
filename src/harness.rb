@@ -323,8 +323,12 @@ def install_gems(gems)
   saved = $stdout.dup
   $stdout.reopen($stderr)
   begin
+    # An empty RT_GEM_SOURCE is truthy in Ruby, so treat blank as unset and fall
+    # back to the default source rather than an empty source URL.
+    configured = ENV["RT_GEM_SOURCE"]
+    configured = nil if configured.nil? || configured.strip.empty?
     gemfile(true, quiet: true) do
-      source(ENV["RT_GEM_SOURCE"] || "https://rubygems.org")
+      source(configured || "https://rubygems.org")
       gems.each { |g| gem(g["name"], *g["requirements"]) }
     end
   # Resolution failure is an environment problem, not a task bug, so any failure

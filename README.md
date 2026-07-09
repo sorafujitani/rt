@@ -113,8 +113,12 @@ Rules and behavior:
   that file. `rt help` shows a `Gems:` line and `rt list --json` includes a
   `gems` array on each task.
 - **Gem tasks are self-contained.** A task that declares gems runs under plain
-  Ruby with any surrounding Bundler context removed, so it does *not* see the
-  gems from a project `Gemfile`. Declare everything the task needs.
+  Ruby with the project's Bundler context (`BUNDLE_GEMFILE`, `RUBYOPT`) removed,
+  so it does *not* see the gems from a project `Gemfile`. Declare everything the
+  task needs. Isolation is not total, though: if you launch `rt` itself under
+  `bundle exec`, the outer environment (`GEM_HOME`, `GEM_PATH`, and similar) can
+  still leak in. Full environment isolation is deferred to the Phase 3 install
+  isolation work.
 - **Installation runs even under `--dry-run`,** because the task block still
   `require`s the gems and they must be resolvable first.
 - **Install target is the default gem environment** (`bundler/inline`'s normal
@@ -149,6 +153,12 @@ with no project at all. Put task files in `<config_dir>/tasks/`, where
 
 Global tasks work the same as project tasks, and get their own cache and
 harness under `<config_dir>/.rt/`.
+
+A word on trust: the top level of every task file runs during discovery, on
+*every* rt invocation (`list`, `help`, and `run`) from any directory. Because
+global task files load regardless of where you are, write access to
+`<config_dir>/tasks/` is equivalent to code-execution access whenever you run
+rt. Keep that directory as trusted as any startup script.
 
 - Outside any project, rt runs purely from global tasks.
 - Inside a project, `rt list` shows two sections, `Project tasks:` and

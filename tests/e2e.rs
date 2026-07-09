@@ -568,6 +568,27 @@ fn gem_task_installs_a_real_gem() {
 }
 
 #[test]
+fn empty_gem_source_falls_back_to_default() {
+    // An empty RT_GEM_SOURCE must be treated as unset. Before the fix, a blank
+    // value reached bundler as `source("")` and failed with "must be an absolute
+    // URI"; after the fix it falls back to the default rubygems.org source. This
+    // runs offline, so the fallback may fail to fetch — but never with the blank
+    // -source symptom, which is the regression we guard against.
+    let staged = stage("gems");
+    let assert = rt()
+        .args(["run", "with_rake"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RT_GEM_SOURCE", "")
+        .assert();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains("absolute URI") && !stderr.contains("must be an absolute"),
+        "blank RT_GEM_SOURCE must not reach bundler as an empty source; stderr was:\n{stderr}"
+    );
+}
+
+#[test]
 fn gem_install_failure_is_environment_error() {
     let staged = stage("gems");
     // A nonexistent gem plus an unreachable source: bundler cannot fetch specs,
