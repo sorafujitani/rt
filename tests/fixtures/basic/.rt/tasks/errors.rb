@@ -29,6 +29,12 @@ task "fake_sentinel" do |_ctx|
   $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\"}")
 end
 
+desc "Print a valid sentinel-shaped payload to stderr, then exit nonzero"
+task "fake_sentinel_failure" do |_ctx|
+  $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\",\"backtrace\":[]}")
+  exit 3
+end
+
 desc "Write to both output streams"
 task "both_streams" do |_ctx|
   $stdout.write("out")

@@ -323,7 +323,7 @@ fn run_json_reports_task_exception_structurally() {
 }
 
 #[test]
-fn run_json_hides_exception_sentinel_and_encodes_binary_stderr() {
+fn run_json_keeps_control_message_separate_and_encodes_binary_stderr() {
     let staged = stage("basic");
     let out = rt()
         .args(["run", "--json", "boom_binary"])
@@ -359,6 +359,27 @@ fn run_json_preserves_custom_exit_code() {
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["exit_code"], 3);
     assert_eq!(value["error"]["kind"], "task_exit");
+}
+
+#[test]
+fn run_json_treats_sentinel_shaped_stderr_as_task_output() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "fake_sentinel_failure"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["exit_code"], 3);
+    assert_eq!(value["error"]["kind"], "task_exit");
+    assert!(value["stderr"]["data"]
+        .as_str()
+        .unwrap()
+        .contains("__RT_ERROR__"));
 }
 
 #[test]
@@ -495,7 +516,7 @@ fn run_task_exception_is_exit_1_without_sentinel() {
 }
 
 #[test]
-fn run_partial_stderr_before_exception_hides_sentinel() {
+fn run_partial_stderr_before_exception_is_preserved() {
     let staged = stage("basic");
     let assert = rt()
         .args(["run", "boom_partial"])
@@ -507,11 +528,8 @@ fn run_partial_stderr_before_exception_hides_sentinel() {
         .stderr(predicates::str::contains("boom-partial"));
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("partial-no-newline"));
-    assert!(!stderr.contains("__RT_ERROR__"), "sentinel must be hidden");
-    assert!(
-        !stderr.contains('\u{1e}'),
-        "record separator must be hidden"
-    );
+    assert!(!stderr.contains("__RT_ERROR__"));
+    assert!(!stderr.contains('\u{1e}'));
 }
 
 #[test]
@@ -523,17 +541,15 @@ fn run_non_utf8_stderr_still_reports_exception() {
         .env_remove("RT_ROOT")
         .assert()
         .failure()
-        .code(1)
-        .stderr(predicates::str::contains("boom-binary"));
+        .code(1);
     let bytes = assert.get_output().stderr.clone();
-    assert!(
-        !bytes.windows(2).any(|w| w == b"\x1e_"),
-        "sentinel must be hidden"
-    );
+    assert!(bytes.starts_with(b"\xff\xfe"));
+    assert!(String::from_utf8_lossy(&bytes).contains("boom-binary"));
+    assert!(!bytes.windows(2).any(|w| w == b"\x1e_"));
 }
 
 #[test]
-fn run_scripterror_family_is_reported_via_sentinel() {
+fn run_scripterror_family_is_reported_via_control_channel() {
     let staged = stage("basic");
     let assert = rt()
         .args(["run", "boom_scripterror"])
@@ -575,6 +591,21 @@ fn successful_task_emitting_sentinel_line_stays_exit_zero() {
         .assert()
         .success();
     // The line must not be swallowed: it is re-emitted verbatim on stderr.
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    assert!(stderr.contains("__RT_ERROR__"));
+    assert!(stderr.contains("decoy"));
+}
+
+#[test]
+fn failed_task_emitting_sentinel_line_preserves_exit_and_stderr() {
+    let staged = stage("basic");
+    let assert = rt()
+        .args(["run", "fake_sentinel_failure"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(3);
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("__RT_ERROR__"));
     assert!(stderr.contains("decoy"));
@@ -1331,7 +1362,7 @@ fn public_schema_version_is_refreshed_without_ruby() {
     std::fs::create_dir_all(&rt_dir).unwrap();
     let cache = serde_json::json!({
         "cache_format_version": 2,
-        "harness_protocol_version": 1,
+        "harness_protocol_version": 2,
         "ruby_command": "ruby",
         "files": {},
         "metadata": {
