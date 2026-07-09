@@ -22,8 +22,8 @@ fn main() {
             let result = run_result::RunResult::error(
                 &run_task_name(&raw_args),
                 RtError::Usage(error.to_string().trim().to_string()),
-                Vec::new(),
-                Vec::new(),
+                run_result::CapturedBytes::empty(),
+                run_result::CapturedBytes::empty(),
                 Vec::new(),
             );
             print_run_result(result);
@@ -39,9 +39,13 @@ fn main() {
         } => {
             let result = match project::find_roots() {
                 Ok(roots) => runner::run_json(&roots, &task, &args),
-                Err(error) => {
-                    run_result::RunResult::error(&task, error, Vec::new(), Vec::new(), Vec::new())
-                }
+                Err(error) => run_result::RunResult::error(
+                    &task,
+                    error,
+                    run_result::CapturedBytes::empty(),
+                    run_result::CapturedBytes::empty(),
+                    Vec::new(),
+                ),
             };
             print_run_result(result);
         }

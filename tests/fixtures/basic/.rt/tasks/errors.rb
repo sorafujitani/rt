@@ -56,6 +56,20 @@ task "large_streams" do |_ctx|
   threads.each(&:join)
 end
 
+desc "Write exactly the JSON capture limit"
+task "capture_boundary" do |_ctx|
+  $stdout.write("b" * 1_048_576)
+end
+
+desc "Write one byte beyond the JSON capture limit to both streams"
+task "capture_overflow" do |_ctx|
+  threads = [
+    Thread.new { $stdout.write("o" * 1_048_577) },
+    Thread.new { $stderr.write("e" * 1_048_577) }
+  ]
+  threads.each(&:join)
+end
+
 desc "Use a task-owned --json option"
 option :json, type: :boolean, default: false
 task "owns_json" do |ctx|

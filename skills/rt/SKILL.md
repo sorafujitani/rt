@@ -30,8 +30,9 @@ Prefer `rt run --json` when an agent needs to interpret the result. It emits one
 JSON object on stdout and nothing on stderr, including on task, usage, and
 environment failures. The process exit code is still meaningful. Captured
 stdout/stderr use `encoding: "utf-8"` for text and `encoding: "base64"` for
-non-UTF-8 bytes. If a task declares its own `--json` option, pass task arguments
-after the separator: `rt run --json my-task -- --json`.
+non-UTF-8 bytes. Each stream captures at most the first 1,048,576 bytes and
+reports whether more output was drained. If a task declares its own `--json`
+option, pass task arguments after the separator: `rt run --json my-task -- --json`.
 
 Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets `ctx.dry_run?` to true inside the task. Use it to preview a task with side effects before running it for real.
 

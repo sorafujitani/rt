@@ -5,7 +5,7 @@ use crate::metadata::{LoadError, Metadata, Source, METADATA_SCHEMA_VERSION};
 use crate::output;
 use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
-use crate::run_result::RunResult;
+use crate::run_result::{CapturedBytes, RunResult};
 use command_fds::{CommandFdExt, FdMapping};
 use os_pipe::PipeReader;
 use serde_json::json;
@@ -16,6 +16,7 @@ use std::process::{Command, Stdio};
 
 const CONTROL_FD: i32 = 3;
 const CONTROL_FD_ENV: &str = "RT_CONTROL_FD";
+const CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
 
 /// Metadata merged across roots, plus the interpreter that produced each root's
 /// metadata (needed to run a task with the same Ruby that discovered it).
@@ -270,8 +271,8 @@ pub fn run_json(roots: &Roots, task_name: &str, raw_args: &[String]) -> RunResul
             return RunResult::error(
                 task_name,
                 error.error,
-                Vec::new(),
-                Vec::new(),
+                CapturedBytes::empty(),
+                CapturedBytes::empty(),
                 error.load_errors,
             )
         }
@@ -312,14 +313,20 @@ pub fn run_json(roots: &Roots, task_name: &str, raw_args: &[String]) -> RunResul
                 ),
             }
         }
-        Err(error) => RunResult::error(task_name, error, Vec::new(), Vec::new(), load_errors),
+        Err(error) => RunResult::error(
+            task_name,
+            error,
+            CapturedBytes::empty(),
+            CapturedBytes::empty(),
+            load_errors,
+        ),
     }
 }
 
 struct CapturedRun {
     code: Option<i32>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+    stdout: CapturedBytes,
+    stderr: CapturedBytes,
     failure: Option<TaskFailure>,
 }
 
@@ -339,10 +346,10 @@ fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, R
         .map_err(|e| ruby::environment_error(&ruby, &e))?;
     drop(command);
 
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let stdout_reader = std::thread::spawn(move || read_all(&mut stdout));
-    let stderr_reader = std::thread::spawn(move || read_all(&mut stderr));
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let stdout_reader = std::thread::spawn(move || read_bounded(stdout, CAPTURE_LIMIT_BYTES));
+    let stderr_reader = std::thread::spawn(move || read_bounded(stderr, CAPTURE_LIMIT_BYTES));
     let control_reader = std::thread::spawn(move || read_all(control));
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -391,6 +398,27 @@ fn read_all<R: Read>(mut reader: R) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+fn read_bounded<R: Read>(mut reader: R, limit: usize) -> std::io::Result<CapturedBytes> {
+    let mut captured = Vec::new();
+    let mut total_bytes = 0_u64;
+    let mut chunk = [0_u8; 8192];
+
+    loop {
+        let count = reader.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        total_bytes = total_bytes
+            .checked_add(count as u64)
+            .ok_or_else(|| std::io::Error::other("task output byte count overflowed"))?;
+
+        let remaining = limit.saturating_sub(captured.len());
+        captured.extend_from_slice(&chunk[..count.min(remaining)]);
+    }
+
+    Ok(CapturedBytes::new(captured, total_bytes))
 }
 
 fn join_control(
