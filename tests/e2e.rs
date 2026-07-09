@@ -688,9 +688,40 @@ fn help_json_emits_single_task() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 2);
-    assert_eq!(value["task"]["name"], "deploy");
-    assert_eq!(value["task"]["params"][0]["name"], "environment");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "protocol_version": 2,
+            "task": {
+                "name": "deploy",
+                "description": "Deploy the application to an environment",
+                "file": "tasks/deploy.rb",
+                "params": [{
+                    "name": "environment",
+                    "required": true,
+                    "default": null,
+                    "enum": ["staging", "production"],
+                    "description": "target environment"
+                }],
+                "options": [
+                    {
+                        "name": "workers",
+                        "type": "integer",
+                        "default": 2,
+                        "description": "worker count"
+                    },
+                    {
+                        "name": "force",
+                        "type": "boolean",
+                        "default": false,
+                        "description": "skip safety checks"
+                    }
+                ],
+                "gems": [],
+                "source": "project"
+            }
+        })
+    );
 }
 
 #[test]
@@ -1266,12 +1297,12 @@ fn project_task_shadows_global_of_same_name() {
 }
 
 #[test]
-fn protocol_version_bump_invalidates_old_cache() {
-    let staged = stage("basic");
+fn old_cache_format_is_rejected() {
+    let staged = tempfile::tempdir().unwrap();
     let rt_dir = staged.path().join(".rt");
     std::fs::create_dir_all(&rt_dir).unwrap();
-    // A well-formed cache from an older protocol: it names a task that does not
-    // exist. If honored, "ghost" would appear; a correct bump ignores it.
+    // This is a valid cache from v0.0.4. Empty PATH proves rt rejects it and
+    // attempts fresh discovery rather than returning the cached ghost task.
     let stale = serde_json::json!({
         "cache_version": 1,
         "ruby_command": "ruby",
@@ -1287,10 +1318,41 @@ fn protocol_version_bump_invalidates_old_cache() {
     rt().arg("list")
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
+        .env("PATH", "")
         .assert()
-        .success()
-        .stdout(predicates::str::contains("greet"))
-        .stdout(predicates::str::contains("ghost").not());
+        .failure()
+        .code(74);
+}
+
+#[test]
+fn public_schema_version_is_refreshed_without_ruby() {
+    let staged = tempfile::tempdir().unwrap();
+    let rt_dir = staged.path().join(".rt");
+    std::fs::create_dir_all(&rt_dir).unwrap();
+    let cache = serde_json::json!({
+        "cache_format_version": 2,
+        "harness_protocol_version": 1,
+        "ruby_command": "ruby",
+        "files": {},
+        "metadata": {
+            "protocol_version": 1,
+            "tasks": [{ "name": "ghost", "file": "tasks/ghost.rb" }],
+            "errors": []
+        }
+    });
+    std::fs::write(rt_dir.join("cache.json"), cache.to_string()).unwrap();
+
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["protocol_version"], 2);
+    assert_eq!(value["tasks"][0]["name"], "ghost");
 }
 
 #[test]

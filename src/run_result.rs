@@ -4,7 +4,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde::Serialize;
 
-const SCHEMA_VERSION: u32 = 1;
+pub const RUN_RESULT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
 pub struct RunResult {
@@ -103,7 +103,7 @@ impl RunResult {
         load_errors: Vec<LoadError>,
     ) -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            schema_version: RUN_RESULT_SCHEMA_VERSION,
             task: task.to_string(),
             status: RunStatus::Success,
             exit_code: 0,
@@ -123,7 +123,7 @@ impl RunResult {
     ) -> Self {
         let exit_code = error.exit_code();
         Self {
-            schema_version: SCHEMA_VERSION,
+            schema_version: RUN_RESULT_SCHEMA_VERSION,
             task: task.to_string(),
             status: RunStatus::Error,
             exit_code,
@@ -132,5 +132,29 @@ impl RunResult {
             error: Some(RunError::from_rt_error(&error)),
             load_errors,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn successful_run_json_contract() {
+        let result = RunResult::success("greet", b"hello\n".to_vec(), Vec::new(), Vec::new());
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({
+                "schema_version": 1,
+                "task": "greet",
+                "status": "success",
+                "exit_code": 0,
+                "stdout": { "encoding": "utf-8", "data": "hello\n" },
+                "stderr": { "encoding": "utf-8", "data": "" },
+                "error": null,
+                "load_errors": []
+            })
+        );
     }
 }

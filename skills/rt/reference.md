@@ -35,6 +35,8 @@
 `rt help <task> --json` returns `{ "protocol_version": 2, "task": { ...same task shape... } }`.
 
 Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in the task as strings regardless of the default's type.
+`protocol_version` versions this public metadata schema; it is independent of
+rt's private Ruby harness protocol and on-disk cache format.
 
 `rt run --json <task> [args...]`:
 

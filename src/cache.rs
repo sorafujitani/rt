@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::{Metadata, PROTOCOL_VERSION};
+use crate::metadata::{Metadata, HARNESS_PROTOCOL_VERSION, METADATA_SCHEMA_VERSION};
 use crate::ruby::{self, RubyCommand};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-const CACHE_VERSION: u32 = 1;
+const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// Per-file fingerprint: mtime seconds, mtime nanoseconds, and byte size. Size
 /// is included because some filesystems only expose 1-second mtime resolution,
@@ -17,7 +17,8 @@ type FileSet = BTreeMap<String, FileMeta>;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Cache {
-    cache_version: u32,
+    cache_format_version: u32,
+    harness_protocol_version: u32,
     ruby_command: String,
     files: FileSet,
     metadata: Metadata,
@@ -37,7 +38,9 @@ pub fn load(
 
     if let Some(cache) = read(root) {
         if is_valid(&cache, &ruby_desc, &current) {
-            return Ok((cache.metadata, ruby.clone()));
+            let mut metadata = cache.metadata;
+            metadata.schema_version = METADATA_SCHEMA_VERSION;
+            return Ok((metadata, ruby.clone()));
         }
     }
 
@@ -45,7 +48,8 @@ pub fn load(
     write(
         root,
         &Cache {
-            cache_version: CACHE_VERSION,
+            cache_format_version: CACHE_FORMAT_VERSION,
+            harness_protocol_version: HARNESS_PROTOCOL_VERSION,
             ruby_command: used.describe(),
             files: current,
             metadata: metadata.clone(),
@@ -55,8 +59,8 @@ pub fn load(
 }
 
 fn is_valid(cache: &Cache, ruby_desc: &str, current: &FileSet) -> bool {
-    cache.cache_version == CACHE_VERSION
-        && cache.metadata.protocol_version == PROTOCOL_VERSION
+    cache.cache_format_version == CACHE_FORMAT_VERSION
+        && cache.harness_protocol_version == HARNESS_PROTOCOL_VERSION
         && cache.ruby_command == ruby_desc
         && &cache.files == current
 }
@@ -126,7 +130,7 @@ mod tests {
 
     fn sample_metadata() -> Metadata {
         Metadata {
-            protocol_version: PROTOCOL_VERSION,
+            schema_version: METADATA_SCHEMA_VERSION,
             tasks: Vec::new(),
             errors: Vec::new(),
         }
@@ -134,7 +138,8 @@ mod tests {
 
     fn cache_with(files: FileSet, ruby: &str) -> Cache {
         Cache {
-            cache_version: CACHE_VERSION,
+            cache_format_version: CACHE_FORMAT_VERSION,
+            harness_protocol_version: HARNESS_PROTOCOL_VERSION,
             ruby_command: ruby.to_string(),
             files,
             metadata: sample_metadata(),
@@ -181,18 +186,26 @@ mod tests {
     }
 
     #[test]
-    fn invalid_on_cache_version_bump() {
+    fn invalid_on_cache_format_version_bump() {
         let f = files(&[("tasks/a.rb", (10, 0, 100))]);
         let mut c = cache_with(f.clone(), "ruby");
-        c.cache_version = CACHE_VERSION + 1;
+        c.cache_format_version = CACHE_FORMAT_VERSION + 1;
         assert!(!is_valid(&c, "ruby", &f));
     }
 
     #[test]
-    fn invalid_on_protocol_version_mismatch() {
+    fn invalid_on_harness_protocol_version_mismatch() {
         let f = files(&[("tasks/a.rb", (10, 0, 100))]);
         let mut c = cache_with(f.clone(), "ruby");
-        c.metadata.protocol_version = PROTOCOL_VERSION + 1;
+        c.harness_protocol_version = HARNESS_PROTOCOL_VERSION + 1;
         assert!(!is_valid(&c, "ruby", &f));
+    }
+
+    #[test]
+    fn public_schema_version_does_not_invalidate_cache() {
+        let f = files(&[("tasks/a.rb", (10, 0, 100))]);
+        let mut c = cache_with(f.clone(), "ruby");
+        c.metadata.schema_version = METADATA_SCHEMA_VERSION + 1;
+        assert!(is_valid(&c, "ruby", &f));
     }
 }

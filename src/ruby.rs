@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::{Metadata, Source};
+use crate::metadata::{HarnessMetadata, Metadata, Source, HARNESS_PROTOCOL_VERSION};
 use crate::output;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -249,8 +249,15 @@ pub fn discover(root: &Path, ruby: &RubyCommand) -> Result<Metadata, RtError> {
         )));
     }
 
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| RtError::Internal(format!("could not parse task metadata: {e}")))
+    let wire: HarnessMetadata = serde_json::from_slice(&output.stdout)
+        .map_err(|e| RtError::Internal(format!("could not parse task metadata: {e}")))?;
+    if wire.harness_protocol_version != HARNESS_PROTOCOL_VERSION {
+        return Err(RtError::Internal(format!(
+            "Ruby harness protocol mismatch: expected {}, got {}",
+            HARNESS_PROTOCOL_VERSION, wire.harness_protocol_version
+        )));
+    }
+    Ok(wire.into_metadata())
 }
 
 pub fn environment_error(ruby: &RubyCommand, e: &std::io::Error) -> RtError {
