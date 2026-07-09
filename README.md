@@ -172,13 +172,37 @@ that.
 - `rt list` — list tasks with descriptions.
 - `rt help <task>` — show usage for one task.
 - `rt run <task> [args...]` — run a task.
+- `rt run --json <task> [args...]` — run a task and capture its result as JSON.
 
 ### Machine-readable output
 
-`rt list --json` and `rt help <task> --json` print JSON on stdout and nothing
-else. The schema keeps full type information for params and options so it can
-be converted to a JSON Schema or an MCP tool definition. Load errors are
-reported in the JSON `errors` array rather than on stderr.
+`rt list --json`, `rt help <task> --json`, and `rt run --json <task>` print JSON
+on stdout and nothing on stderr. The list/help schema keeps full type
+information for params and options so it can be converted to a JSON Schema or
+an MCP tool definition. Load errors are reported in the JSON rather than on
+stderr.
+
+`rt run --json` captures the task's stdout and stderr, completion status, exit
+code, and structured Ruby exception details in one result. UTF-8 output is
+returned as text; non-UTF-8 output is base64-encoded. The process still exits
+with the ordinary rt/task exit code, so callers can use both the status code
+and the JSON body.
+
+```json
+{
+  "schema_version": 1,
+  "task": "greet",
+  "status": "success",
+  "exit_code": 0,
+  "stdout": { "encoding": "utf-8", "data": "Hello, sora!\n" },
+  "stderr": { "encoding": "utf-8", "data": "" },
+  "error": null,
+  "load_errors": []
+}
+```
+
+`--json` is an rt option. If a task itself declares an option named `json`, put
+its arguments after `--`: `rt run --json my-task -- --json`.
 
 ## Global tasks
 
