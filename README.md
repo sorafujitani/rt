@@ -15,6 +15,21 @@ Ruby using only the standard library.
 - A Ruby interpreter (`ruby`) on `PATH`, or `RT_RUBY` pointing at one.
 - macOS or Linux. Windows is not supported.
 
+## Install
+
+Via Homebrew (the repository doubles as a tap; no releases yet, so install from HEAD):
+
+```
+brew tap sorafujitani/rt https://github.com/sorafujitani/rt
+brew install --HEAD sorafujitani/rt/rt
+```
+
+Or with cargo, from a checkout:
+
+```
+cargo install --path .
+```
+
 ## Getting started
 
 Create a `tasks/` directory in your project and add a task file:
