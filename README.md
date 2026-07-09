@@ -31,6 +31,16 @@ Or with cargo, from a checkout:
 cargo install --path .
 ```
 
+### Agent skill
+
+An [Agent Skill](https://skills.sh) that teaches coding agents to discover,
+run, and author rt tasks ships in `skills/rt/`. It targets no specific agent;
+install it into Claude Code, Codex, Cursor, or any other supported agent with:
+
+```
+npx skills add sorafujitani/rt
+```
+
 ## Getting started
 
 Create a `tasks/` directory in your project and add a task file:
