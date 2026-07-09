@@ -187,19 +187,32 @@ an MCP tool definition. Load errors are reported in the JSON rather than on
 stderr.
 
 `rt run --json` captures the task's stdout and stderr, completion status, exit
-code, and structured Ruby exception details in one result. UTF-8 output is
-returned as text; non-UTF-8 output is base64-encoded. The process still exits
-with the ordinary rt/task exit code, so callers can use both the status code
-and the JSON body.
+code, and structured Ruby exception details in one result. Each stream retains
+at most the first 1,048,576 bytes while continuing to drain and count all
+output. UTF-8 output is returned as text; non-UTF-8 output is base64-encoded.
+The process still exits with the ordinary rt/task exit code, so callers can use
+both the status code and the JSON body.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task": "greet",
   "status": "success",
   "exit_code": 0,
-  "stdout": { "encoding": "utf-8", "data": "Hello, sora!\n" },
-  "stderr": { "encoding": "utf-8", "data": "" },
+  "stdout": {
+    "encoding": "utf-8",
+    "data": "Hello, sora!\n",
+    "total_bytes": 13,
+    "captured_bytes": 13,
+    "truncated": false
+  },
+  "stderr": {
+    "encoding": "utf-8",
+    "data": "",
+    "total_bytes": 0,
+    "captured_bytes": 0,
+    "truncated": false
+  },
   "error": null,
   "load_errors": []
 }

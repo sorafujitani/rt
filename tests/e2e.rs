@@ -254,12 +254,15 @@ fn run_json_captures_successful_execution() {
     assert!(out.stderr.is_empty());
 
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["task"], "greet");
     assert_eq!(value["status"], "success");
     assert_eq!(value["exit_code"], 0);
     assert_eq!(value["stdout"]["encoding"], "utf-8");
     assert_eq!(value["stdout"]["data"], "Hello, sora!\n");
+    assert_eq!(value["stdout"]["total_bytes"], 13);
+    assert_eq!(value["stdout"]["captured_bytes"], 13);
+    assert_eq!(value["stdout"]["truncated"], false);
     assert_eq!(value["stderr"]["data"], "");
     assert!(value["error"].is_null());
 }
@@ -397,6 +400,9 @@ fn run_json_base64_encodes_non_utf8_output() {
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["stdout"]["encoding"], "base64");
     assert_eq!(value["stdout"]["data"], "//4=");
+    assert_eq!(value["stdout"]["total_bytes"], 2);
+    assert_eq!(value["stdout"]["captured_bytes"], 2);
+    assert_eq!(value["stdout"]["truncated"], false);
 }
 
 #[test]
@@ -414,6 +420,51 @@ fn run_json_drains_large_stdout_and_stderr_without_deadlock() {
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["stdout"]["data"].as_str().unwrap().len(), 131_072);
     assert_eq!(value["stderr"]["data"].as_str().unwrap().len(), 131_072);
+    assert_eq!(value["stdout"]["total_bytes"], 131_072);
+    assert_eq!(value["stderr"]["total_bytes"], 131_072);
+    assert_eq!(value["stdout"]["truncated"], false);
+    assert_eq!(value["stderr"]["truncated"], false);
+}
+
+#[test]
+fn run_json_keeps_output_at_the_capture_limit() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "capture_boundary"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let stdout = &value["stdout"];
+    assert_eq!(stdout["data"].as_str().unwrap().len(), 1_048_576);
+    assert_eq!(stdout["total_bytes"], 1_048_576);
+    assert_eq!(stdout["captured_bytes"], 1_048_576);
+    assert_eq!(stdout["truncated"], false);
+}
+
+#[test]
+fn run_json_bounds_both_streams_and_drains_to_eof() {
+    let staged = stage("basic");
+    let out = rt()
+        .args(["run", "--json", "capture_overflow"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for stream in ["stdout", "stderr"] {
+        let output = &value[stream];
+        assert_eq!(output["data"].as_str().unwrap().len(), 1_048_576);
+        assert_eq!(output["total_bytes"], 1_048_577);
+        assert_eq!(output["captured_bytes"], 1_048_576);
+        assert_eq!(output["truncated"], true);
+    }
 }
 
 #[test]

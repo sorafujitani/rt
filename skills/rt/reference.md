@@ -42,12 +42,24 @@ rt's private Ruby harness protocol and on-disk cache format.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "task": "deploy",
   "status": "error",
   "exit_code": 1,
-  "stdout": { "encoding": "utf-8", "data": "starting\n" },
-  "stderr": { "encoding": "utf-8", "data": "" },
+  "stdout": {
+    "encoding": "utf-8",
+    "data": "starting\n",
+    "total_bytes": 9,
+    "captured_bytes": 9,
+    "truncated": false
+  },
+  "stderr": {
+    "encoding": "utf-8",
+    "data": "",
+    "total_bytes": 0,
+    "captured_bytes": 0,
+    "truncated": false
+  },
   "error": {
     "kind": "task_exception",
     "class": "RuntimeError",
@@ -60,8 +72,11 @@ rt's private Ruby harness protocol and on-disk cache format.
 
 `status` is `success` or `error`. `error.kind` is one of `usage`,
 `task_exception`, `task_exit`, `environment`, or `internal`. A successful result
-has `error: null`. Output objects use `encoding: "utf-8"` when the captured bytes
-are valid UTF-8 and `encoding: "base64"` otherwise. JSON mode writes the result
+has `error: null`. Each output object retains at most the first 1,048,576 raw
+bytes. `total_bytes` counts the full drained stream, `captured_bytes` counts the
+retained raw bytes, and `truncated` is true when they differ. Output objects use
+`encoding: "utf-8"` when the captured bytes are valid UTF-8 and
+`encoding: "base64"` otherwise. JSON mode writes the result
 only to stdout and preserves the normal process exit code.
 
 The rt-level `--json` flag may appear before or after the task name. To pass a
