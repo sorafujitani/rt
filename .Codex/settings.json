@@ -1,0 +1,41 @@
+{
+  "approvalRequired": {
+    "bash": {
+      "patterns": [
+        {
+          "pattern": "^ruby test/exploratory/.*$",
+          "behavior": "accept",
+          "reason": "Exploratory testing scripts"
+        },
+        {
+          "pattern": "^python test/exploratory/.*$",
+          "behavior": "accept",
+          "reason": "Exploratory testing scripts"
+        },
+        {
+          "pattern": "^node test/exploratory/.*$",
+          "behavior": "accept",
+          "reason": "Exploratory testing scripts"
+        }
+      ]
+    },
+    "write": {
+      "patterns": [
+        {
+          "pattern": "^test/exploratory/.*$",
+          "behavior": "accept",
+          "reason": "Exploratory testing files"
+        }
+      ]
+    },
+    "edit": {
+      "patterns": [
+        {
+          "pattern": "^test/exploratory/.*$",
+          "behavior": "accept",
+          "reason": "Exploratory testing files"
+        }
+      ]
+    }
+  }
+}
