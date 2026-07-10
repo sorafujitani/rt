@@ -1,7 +1,7 @@
 use crate::args;
 use crate::cache;
-use crate::error::{RtError, TaskFailure};
-use crate::metadata::{LoadError, Metadata, Source, METADATA_SCHEMA_VERSION};
+use crate::error::{HarnessFailure, RtError};
+use crate::metadata::{LoadError, Metadata, Source, TaskRequirement, METADATA_SCHEMA_VERSION};
 use crate::output;
 use crate::project::Roots;
 use crate::ruby::{self, RubyCommand};
@@ -76,6 +76,15 @@ fn merge(project: Option<Metadata>, global: Option<Metadata>) -> Metadata {
     if let Some(m) = global {
         for mut t in m.tasks {
             t.source = Source::Global;
+            if t.requirements.contains(&TaskRequirement::Rails) {
+                errors.push(LoadError {
+                    file: t.file.clone(),
+                    class: "InvalidDeclaration".to_string(),
+                    message: format!("task {:?}: global tasks cannot require Rails", t.name),
+                    source: Source::Global,
+                });
+                continue;
+            }
             if names.contains(&t.name) {
                 errors.push(LoadError {
                     file: t.file.clone(),
@@ -168,6 +177,8 @@ fn unknown_task(meta: &Metadata, task: &str) -> RtError {
 struct PreparedRun {
     root: PathBuf,
     ruby: RubyCommand,
+    project_root: Option<PathBuf>,
+    working_dir: Option<PathBuf>,
     input: Vec<u8>,
     load_errors: Vec<LoadError>,
 }
@@ -187,9 +198,9 @@ fn prepare_run(
         error,
         load_errors: Vec::new(),
     })?;
-    let load_errors = loaded.meta.errors.clone();
+    let mut load_errors = loaded.meta.errors.clone();
     // Clone to end the borrow on loaded.meta before moving a root out of loaded.
-    let task = match loaded.meta.find_task(task_name) {
+    let mut task = match loaded.meta.find_task(task_name) {
         Some(t) => t.clone(),
         None => {
             return Err(PrepareError {
@@ -209,11 +220,70 @@ fn prepare_run(
         error: RtError::Internal("resolved task has no backing root".to_string()),
         load_errors: load_errors.clone(),
     })?;
+    let rails = task.requirements.contains(&TaskRequirement::Rails);
+    let project_root = match task.source {
+        Source::Project => Some(
+            root.parent()
+                .ok_or_else(|| PrepareError {
+                    error: RtError::Internal(
+                        "project task home has no parent directory".to_string(),
+                    ),
+                    load_errors: load_errors.clone(),
+                })?
+                .to_path_buf(),
+        ),
+        Source::Global => None,
+    };
+
+    // A task declaring inline gems must run self-contained: bundler/inline
+    // fights an active `bundle exec`, so drop to isolated plain Ruby.
+    let ruby = if rails {
+        let ruby = RubyCommand::resolve_rails(&root).map_err(|error| PrepareError {
+            error,
+            load_errors: load_errors.clone(),
+        })?;
+        ruby.check_bundle(project_root.as_ref().expect("Rails project root"))
+            .map_err(|error| PrepareError {
+                error,
+                load_errors: load_errors.clone(),
+            })?;
+
+        // Rails tasks must be validated and executed under the same application
+        // bundle. The initial discovery may have used RT_RUBY or .rt/Gemfile,
+        // so its metadata is only enough to identify the Rails requirement.
+        let mut rails_meta = ruby::discover(&root, &ruby).map_err(|error| PrepareError {
+            error: RtError::Environment(format!(
+                "could not discover Rails tasks in the application bundle: {error}"
+            )),
+            load_errors: load_errors.clone(),
+        })?;
+        for error in &mut rails_meta.errors {
+            error.source = Source::Project;
+        }
+        load_errors.retain(|error| error.source == Source::Global);
+        load_errors.extend(rails_meta.errors.clone());
+        task = rails_meta
+            .find_task(task_name)
+            .filter(|task| task.requirements.contains(&TaskRequirement::Rails))
+            .cloned()
+            .ok_or_else(|| PrepareError {
+                error: RtError::Environment(format!(
+                    "Rails task {task_name:?} is not available in the application bundle"
+                )),
+                load_errors: load_errors.clone(),
+            })?;
+        task.source = Source::Project;
+        ruby
+    } else if task.gems.is_empty() {
+        ruby
+    } else {
+        RubyCommand::plain_isolated()
+    };
+
     let parsed = args::parse(&task, raw_args).map_err(|error| PrepareError {
         error,
         load_errors: load_errors.clone(),
     })?;
-
     let input = json!({
         "task": task_name,
         "params": parsed.params,
@@ -225,17 +295,17 @@ fn prepare_run(
         load_errors: load_errors.clone(),
     })?;
 
-    // A task declaring inline gems must run self-contained: bundler/inline
-    // fights an active `bundle exec`, so drop to isolated plain Ruby.
-    let ruby = if task.gems.is_empty() {
-        ruby
-    } else {
-        RubyCommand::plain_isolated()
-    };
+    let working_dir = rails.then(|| {
+        project_root
+            .clone()
+            .expect("Rails requirement is only valid for project tasks")
+    });
 
     Ok(PreparedRun {
         root,
         ruby,
+        project_root,
+        working_dir,
         input,
         load_errors,
     })
@@ -247,11 +317,12 @@ pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), Rt
     let ruby = prepared.ruby;
 
     let harness = ruby::ensure_harness(root)?;
-    let (mut command, control) = task_command(&ruby, &harness)?;
+    let (mut command, control) = task_command(&ruby, &harness, prepared.working_dir.as_deref())?;
     let mut child = command
         .arg("--run")
         .arg(root)
         .arg(task_name)
+        .args(prepared.project_root.iter())
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -271,7 +342,7 @@ pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), Rt
     let failure = join_control(control_reader)?;
 
     if let Some(failure) = failure {
-        return Err(RtError::Task(failure));
+        return Err(failure.into_rt_error());
     }
 
     match status.code() {
@@ -308,7 +379,7 @@ pub fn run_json(roots: &Roots, task_name: &str, raw_args: &[String]) -> RunResul
             match (code, failure) {
                 (_, Some(failure)) => RunResult::error(
                     task_name,
-                    RtError::Task(failure),
+                    failure.into_rt_error(),
                     stdout,
                     stderr,
                     load_errors,
@@ -344,18 +415,19 @@ struct CapturedRun {
     code: Option<i32>,
     stdout: CapturedBytes,
     stderr: CapturedBytes,
-    failure: Option<TaskFailure>,
+    failure: Option<HarnessFailure>,
 }
 
 fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, RtError> {
     let root = prepared.root.as_path();
     let ruby = prepared.ruby;
     let harness = ruby::ensure_harness(root)?;
-    let (mut command, control) = task_command(&ruby, &harness)?;
+    let (mut command, control) = task_command(&ruby, &harness, prepared.working_dir.as_deref())?;
     let mut child = command
         .arg("--run")
         .arg(root)
         .arg(task_name)
+        .args(prepared.project_root.iter())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -397,10 +469,14 @@ fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, R
 fn task_command(
     ruby: &RubyCommand,
     harness: &std::path::Path,
+    working_dir: Option<&std::path::Path>,
 ) -> Result<(Command, PipeReader), RtError> {
     let (control_reader, control_writer) = os_pipe::pipe()
         .map_err(|e| RtError::Internal(format!("failed to create task control pipe: {e}")))?;
     let mut command = ruby.command(harness);
+    if let Some(working_dir) = working_dir {
+        command.current_dir(working_dir);
+    }
     command
         .fd_mappings(vec![FdMapping {
             parent_fd: control_writer.into(),
@@ -440,7 +516,7 @@ fn read_bounded<R: Read>(mut reader: R, limit: usize) -> std::io::Result<Capture
 
 fn join_control(
     reader: std::thread::JoinHandle<std::io::Result<Vec<u8>>>,
-) -> Result<Option<TaskFailure>, RtError> {
+) -> Result<Option<HarnessFailure>, RtError> {
     let bytes = reader
         .join()
         .map_err(|_| RtError::Internal("control reader panicked".to_string()))?
@@ -471,6 +547,7 @@ mod tests {
                     params: Vec::new(),
                     options: Vec::new(),
                     gems: Vec::new(),
+                    requirements: Vec::new(),
                     source: Source::Project,
                 })
                 .collect(),

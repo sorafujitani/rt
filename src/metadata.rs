@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Version of the public `list/help --json` metadata schema.
-pub const METADATA_SCHEMA_VERSION: u32 = 2;
+pub const METADATA_SCHEMA_VERSION: u32 = 3;
 
 /// Version of the private Rust/Ruby harness wire contract.
-pub const HARNESS_PROTOCOL_VERSION: u32 = 2;
+pub const HARNESS_PROTOCOL_VERSION: u32 = 3;
 
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.
@@ -60,7 +60,15 @@ pub struct Task {
     #[serde(default)]
     pub gems: Vec<GemRequirement>,
     #[serde(default)]
+    pub requirements: Vec<TaskRequirement>,
+    #[serde(default)]
     pub source: Source,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskRequirement {
+    Rails,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,7 +139,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(metadata).unwrap(),
-            json!({ "protocol_version": 2, "tasks": [], "errors": [] })
+            json!({ "protocol_version": 3, "tasks": [], "errors": [] })
         );
     }
 }

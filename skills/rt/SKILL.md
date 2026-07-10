@@ -49,7 +49,7 @@ The exact JSON shapes, the full environment-variable table, and project layout d
 
 ## Author tasks
 
-Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). The DSL uses a pending-buffer model like Rake. `desc`, `param`, and `option` describe the next `task` declaration. Copy this template:
+Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). The DSL uses a pending-buffer model. `desc`, `param`, `option`, and `requires` describe the next `task` declaration. Copy this template:
 
 ```ruby
 # .rt/tasks/gh-release.rb
@@ -72,9 +72,33 @@ Rules:
 - `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`, so a non-null default must be a string. A required param cannot have a default. `enum` restricts accepted values.
 - `option name, type:, default:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
 - Param and option names must be unique and cannot overlap. `dry_run` and `dry-run` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
-- The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, and `ctx.say(message)`. A bare `return` is a valid early exit.
+- The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)`. `ctx.project_root` is a `Pathname` for project tasks and `nil` for global tasks. A bare `return` is a valid early exit.
 - The task name is exactly what you declare. There is no automatic namespacing from file paths. Declaring the same name twice is an error.
 - Tasks cannot read interactive input from stdin. Pass everything as params and options.
+
+## Rails applications
+
+Declare `requires :rails` immediately before a task that uses the Rails
+application:
+
+```ruby
+desc "Count users"
+requires :rails
+task "users:count" do |ctx|
+  ctx.say User.count
+end
+```
+
+`list`, `help`, and `tools` expose the `rails` requirement without booting the
+application. `run` requires the project-root `Gemfile` and a complete Bundler
+environment, changes to the project root, and loads `config/environment.rb`
+before the block. Rails tasks cannot be global and cannot be declared in a file
+with top-level inline `gem` declarations. Pass the environment normally, for
+example `RAILS_ENV=test rt run --json users:count`.
+
+When replacing Rake tasks, use the full name such as `users:count` directly and
+move prerequisites other than the Rails environment into normal Ruby classes
+or modules. rt does not load Rakefiles or implement Rake task dependencies.
 
 ## Gems
 
@@ -113,3 +137,8 @@ rt picks a Ruby in this order:
 3. `ruby` on `PATH`.
 
 If Bundler is missing or `bundle exec` fails, rt warns and falls back to plain `ruby`. Tasks that declare gems always run under plain Ruby regardless of a `Gemfile`. rt strips `RUBYOPT` and `RUBYLIB` from every Ruby it launches.
+
+Rails tasks never use the plain-Ruby fallback. A missing project `Gemfile`,
+missing Bundler, incomplete bundle, or Rails boot failure exits 74. Rails task
+execution uses the application's Bundler runtime rather than `RT_RUBY` and
+does not reuse activation state from an outer `bundle exec`.

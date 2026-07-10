@@ -144,7 +144,7 @@ fn list_json_emits_only_json_on_stdout() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 2);
+    assert_eq!(value["protocol_version"], 3);
     assert!(!value["tasks"].as_array().unwrap().is_empty());
 }
 
@@ -773,7 +773,7 @@ fn help_json_emits_single_task() {
     assert_eq!(
         value,
         serde_json::json!({
-            "protocol_version": 2,
+            "protocol_version": 3,
             "task": {
                 "name": "deploy",
                 "description": "Deploy the application to an environment",
@@ -800,6 +800,7 @@ fn help_json_emits_single_task() {
                     }
                 ],
                 "gems": [],
+                "requirements": [],
                 "source": "project"
             }
         })
@@ -831,7 +832,7 @@ fn tools_json_emits_catalog_and_filters_one_task() {
     assert!(all.stderr.is_empty());
 
     let catalog: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
-    assert_eq!(catalog["schema_version"], 1);
+    assert_eq!(catalog["schema_version"], 2);
     assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
     assert_eq!(catalog["tools"][0]["task"], "deploy");
     assert_eq!(
@@ -857,7 +858,7 @@ fn tools_json_emits_catalog_and_filters_one_task() {
     assert!(filtered.status.success());
     assert!(filtered.stderr.is_empty());
     let catalog: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
-    assert_eq!(catalog["schema_version"], 1);
+    assert_eq!(catalog["schema_version"], 2);
     assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
     assert_eq!(catalog["tools"][0]["task"], "deploy");
 }
@@ -1528,8 +1529,8 @@ fn public_schema_version_is_refreshed_without_ruby() {
     let rt_dir = staged.path().join(".rt");
     std::fs::create_dir_all(&rt_dir).unwrap();
     let cache = serde_json::json!({
-        "cache_format_version": 2,
-        "harness_protocol_version": 2,
+        "cache_format_version": 3,
+        "harness_protocol_version": 3,
         "ruby_command": "ruby",
         "files": {},
         "metadata": {
@@ -1549,7 +1550,7 @@ fn public_schema_version_is_refreshed_without_ruby() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 2);
+    assert_eq!(value["protocol_version"], 3);
     assert_eq!(value["tasks"][0]["name"], "ghost");
 }
 
@@ -1622,4 +1623,483 @@ fn invalid_declarations_are_structured_load_errors() {
         .assert()
         .success()
         .stdout("ok\n");
+}
+
+#[test]
+fn invalid_task_requirements_are_structured_load_errors() {
+    let staged = stage("invalid_requirements");
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["tasks"].as_array().unwrap().is_empty());
+    let errors = value["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 3);
+    let messages: Vec<&str> = errors
+        .iter()
+        .map(|error| error["message"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "unknown requirement",
+        "duplicate requirement",
+        "cannot declare inline gems",
+    ] {
+        assert!(messages.iter().any(|message| message.contains(expected)));
+    }
+}
+
+#[test]
+fn global_task_cannot_require_rails() {
+    let global = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(global.path().join("tasks")).unwrap();
+    std::fs::write(
+        global.path().join("tasks/rails.rb"),
+        "requires :rails\ntask(\"global_rails\") { |_ctx| }\n",
+    )
+    .unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(cwd.path())
+        .env_remove("RT_ROOT")
+        .env("RT_CONFIG_DIR", global.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(value["tasks"].as_array().unwrap().is_empty());
+    assert_eq!(value["errors"][0]["class"], "InvalidDeclaration");
+    assert!(value["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("global tasks cannot require Rails"));
+}
+
+#[test]
+fn rails_discovery_exposes_metadata_without_booting_the_application() {
+    let staged = stage("rails");
+    let marker = staged.path().join("booted.txt");
+
+    for args in [
+        vec!["list", "--json"],
+        vec!["help", "rails:probe", "--json"],
+        vec!["tools", "--json", "rails:probe"],
+    ] {
+        let out = rt()
+            .args(args)
+            .current_dir(staged.path())
+            .env_remove("RT_ROOT")
+            .env("RAILS_BOOT_MARKER", &marker)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(out.stderr.is_empty());
+        assert!(!marker.exists(), "discovery must not boot Rails");
+    }
+
+    let out = rt()
+        .args(["list", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let task = value["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["name"] == "rails:probe")
+        .unwrap();
+    assert_eq!(task["requirements"], serde_json::json!(["rails"]));
+
+    let out = rt()
+        .args(["tools", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["schema_version"], 2);
+    assert_eq!(
+        value["tools"][0]["requirements"],
+        serde_json::json!(["rails"])
+    );
+}
+
+#[test]
+fn rails_task_help_shows_its_requirement() {
+    let staged = stage("rails");
+    rt().args(["help", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Requires: rails"));
+}
+
+#[test]
+fn rails_task_boots_once_and_receives_environment_root_and_working_directory() {
+    let staged = stage("rails");
+    let marker = staged.path().join("booted.txt");
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path().join("config"))
+        .env_remove("RT_ROOT")
+        .env("RAILS_ENV", "test")
+        .env("RAILS_BOOT_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["status"], "success");
+    let stdout = value["stdout"]["data"].as_str().unwrap();
+    assert!(stdout.contains("env=test\n"));
+    assert!(stdout.contains("users=2\n"));
+
+    let root = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("root="))
+        .unwrap();
+    let cwd = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("cwd="))
+        .unwrap();
+    assert_eq!(
+        Path::new(root).canonicalize().unwrap(),
+        staged.path().canonicalize().unwrap()
+    );
+    assert_eq!(
+        Path::new(cwd).canonicalize().unwrap(),
+        staged.path().canonicalize().unwrap()
+    );
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "boot\n");
+}
+
+#[test]
+fn rails_dry_run_boots_but_task_can_skip_mutation() {
+    let staged = stage("rails");
+    let marker = staged.path().join("booted.txt");
+    rt().args(["run", "rails:probe", "--write", "--dry-run"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RAILS_BOOT_MARKER", &marker)
+        .assert()
+        .success();
+
+    assert_eq!(std::fs::read_to_string(marker).unwrap(), "boot\n");
+    assert!(!staged.path().join("mutation.txt").exists());
+}
+
+#[test]
+fn project_root_is_available_to_non_rails_project_tasks() {
+    let staged = stage("rails");
+    let out = rt()
+        .args(["run", "root:show"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let root = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        Path::new(root.trim()).canonicalize().unwrap(),
+        staged.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn rails_boot_failure_is_a_structured_environment_error() {
+    let staged = stage("rails");
+    std::fs::write(
+        staged.path().join("config/environment.rb"),
+        "raise \"boot exploded\"\n",
+    )
+    .unwrap();
+
+    rt().args(["run", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(74)
+        .stderr(
+            predicates::str::contains("RuntimeError: boot exploded")
+                .and(predicates::str::contains("environment.rb")),
+        );
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    assert!(out.stderr.is_empty());
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert_eq!(value["error"]["class"], "RuntimeError");
+    assert_eq!(value["error"]["message"], "boot exploded");
+    assert!(!value["error"]["backtrace"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn missing_rails_environment_is_a_structured_environment_error() {
+    let staged = stage("rails");
+    std::fs::remove_file(staged.path().join("config/environment.rb")).unwrap();
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert_eq!(value["error"]["class"], "LoadError");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Rails environment not found"));
+}
+
+#[test]
+fn rails_task_requires_project_gemfile() {
+    let staged = stage("rails");
+    std::fs::remove_file(staged.path().join("Gemfile")).unwrap();
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("requires a project Gemfile"));
+}
+
+#[test]
+fn rails_task_requires_bundler() {
+    let staged = stage("rails");
+    let bin = tempfile::tempdir().unwrap();
+    let ruby = std::process::Command::new("ruby")
+        .args(["-rrbconfig", "-e", "print RbConfig.ruby"])
+        .output()
+        .unwrap();
+    assert!(ruby.status.success());
+    let ruby = String::from_utf8(ruby.stdout).unwrap();
+    std::os::unix::fs::symlink(ruby, bin.path().join("ruby")).unwrap();
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("PATH", bin.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("requires Bundler"));
+}
+
+#[test]
+fn rails_task_rejects_an_incomplete_bundle() {
+    let staged = stage("rails");
+    std::fs::write(
+        staged.path().join("Gemfile"),
+        "source \"https://rubygems.org\"\ngem \"missing_local_gem\", path: \"vendor/missing\"\n",
+    )
+    .unwrap();
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(74));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["error"]["kind"], "environment");
+    assert!(value["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("bundle is incomplete"));
+}
+
+#[test]
+fn rails_task_accepts_relative_rt_root() {
+    let staged = stage("rails");
+    let parent = staged.path().parent().unwrap();
+    let relative = staged.path().file_name().unwrap();
+
+    let out = rt()
+        .args(["run", "--json", "rails:probe"])
+        .current_dir(parent)
+        .env("RT_ROOT", relative)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["status"], "success");
+    let root = value["stdout"]["data"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("root="))
+        .unwrap();
+    assert_eq!(
+        Path::new(root).canonicalize().unwrap(),
+        staged.path().canonicalize().unwrap()
+    );
+}
+
+#[test]
+fn rails_task_does_not_reuse_an_outer_bundle_lockfile() {
+    let staged = stage("rails");
+    let outer = tempfile::tempdir().unwrap();
+    let lockfile = outer.path().join("Gemfile.lock");
+    std::fs::write(&lockfile, "outer lockfile must remain unchanged\n").unwrap();
+
+    rt().args(["run", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("BUNDLE_LOCKFILE", &lockfile)
+        .env("BUNDLE_BIN_PATH", "/outer/bundle")
+        .env("BUNDLER_SETUP", "/outer/bundler/setup")
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(lockfile).unwrap(),
+        "outer lockfile must remain unchanged\n"
+    );
+}
+
+#[test]
+fn rails_bundle_probe_ignores_hostile_ruby_environment() {
+    let staged = stage("rails");
+    rt().args(["run", "rails:probe"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RUBYOPT", "-r/rt_missing_probe")
+        .env("RUBYLIB", "/rt/missing/lib")
+        .assert()
+        .success();
+}
+
+#[test]
+fn rails_arguments_are_validated_in_the_application_bundle() {
+    let staged = stage("rails");
+    std::fs::write(
+        staged.path().join(".rt/Gemfile"),
+        "source \"https://rubygems.org\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        staged.path().join(".rt/tasks/runtime.rb"),
+        r#"
+desc "Validate under the Rails application bundle"
+if ENV.fetch("BUNDLE_GEMFILE", "").end_with?("/.rt/Gemfile")
+  param :name
+else
+  param :name, required: true
+end
+requires :rails
+task "rails:runtime" do |ctx|
+  ctx.say ctx.param(:name)
+end
+"#,
+    )
+    .unwrap();
+
+    let list = rt()
+        .args(["help", "rails:runtime", "--json"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .output()
+        .unwrap();
+    assert!(list.status.success());
+    let metadata: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(metadata["task"]["params"][0]["required"], false);
+
+    rt().args(["run", "rails:runtime"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("missing required argument"));
+
+    rt().args(["run", "rails:runtime", "sora"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout("sora\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn project_task_runs_from_a_non_utf8_path() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let parent = tempfile::tempdir().unwrap();
+    let project = parent
+        .path()
+        .join(std::ffi::OsString::from_vec(b"rt-\xff-project".to_vec()));
+    std::fs::create_dir(&project).unwrap();
+    copy_dir(&fixtures_dir().join("basic"), &project);
+
+    rt().args(["run", "greet"])
+        .current_dir(&project)
+        .env_remove("RT_ROOT")
+        .assert()
+        .success()
+        .stdout("Hello, world!\n");
+}
+
+#[test]
+#[ignore = "requires the Rails integration bundle; CI runs this in a dedicated job"]
+fn real_rails_application_uses_active_record() {
+    let staged = stage("rails_real");
+    let out = rt()
+        .args(["run", "--json", "users:smoke"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env("RAILS_ENV", "test")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "real Rails task failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["status"], "success");
+    assert!(value["stdout"]["data"]
+        .as_str()
+        .unwrap()
+        .contains("rails=8.1.3 env=test users=1"));
 }

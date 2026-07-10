@@ -1,5 +1,5 @@
 use crate::error::RtError;
-use crate::metadata::{Metadata, OptionType, Source, Task};
+use crate::metadata::{Metadata, OptionType, Source, Task, TaskRequirement};
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 
@@ -118,6 +118,17 @@ pub fn print_help(task: &Task, source_path: Option<&std::path::Path>) {
             })
             .collect();
         println!("Gems: {}", list.join(", "));
+    }
+
+    if !task.requirements.is_empty() {
+        let requirements: Vec<&str> = task
+            .requirements
+            .iter()
+            .map(|requirement| match requirement {
+                TaskRequirement::Rails => "rails",
+            })
+            .collect();
+        println!("Requires: {}", requirements.join(", "));
     }
 
     if !task.params.is_empty() {

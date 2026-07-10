@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
-const CACHE_FORMAT_VERSION: u32 = 2;
+const CACHE_FORMAT_VERSION: u32 = 3;
 
 /// Per-file fingerprint: mtime seconds, mtime nanoseconds, and byte size. Size
 /// is included because some filesystems only expose 1-second mtime resolution,

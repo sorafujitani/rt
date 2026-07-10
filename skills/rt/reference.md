@@ -6,7 +6,7 @@
 
 ```json
 {
-  "protocol_version": 2,
+  "protocol_version": 3,
   "tasks": [
     {
       "name": "deploy",
@@ -23,7 +23,8 @@
       ],
       "gems": [
         { "name": "octokit", "requirements": ["~> 8.0"] }
-      ]
+      ],
+      "requirements": []
     }
   ],
   "errors": [
@@ -32,7 +33,7 @@
 }
 ```
 
-`rt help <task> --json` returns `{ "protocol_version": 2, "task": { ...same task shape... } }`.
+`rt help <task> --json` returns `{ "protocol_version": 3, "task": { ...same task shape... } }`.
 
 Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in the task as strings regardless of the default's type.
 `protocol_version` versions this public metadata schema; it is independent of
@@ -42,12 +43,13 @@ rt's private Ruby harness protocol and on-disk cache format.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "tools": [
     {
       "task": "deploy",
       "description": "Deploy the application to an environment",
       "source": "project",
+      "requirements": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -82,7 +84,7 @@ rt's private Ruby harness protocol and on-disk cache format.
 ```
 
 `schema_version` versions the tool catalog independently from metadata and run
-results. `task` and `source` preserve the merged metadata values. Properties
+results. `task`, `source`, and `requirements` preserve the merged metadata values. Properties
 combine params, options, and `dry_run` into one object namespace. Params are
 strings; option types remain `string`, `integer`, or `boolean`. Required params
 appear in `required`. Null defaults are omitted, while a boolean with no
@@ -178,6 +180,15 @@ end
 - The gem environment for such tasks is closed: the declared gems plus Ruby's bundled/default gems are visible, a project Gemfile is not.
 - Resolution failures (unknown gem, unreachable source, bad requirement) exit 74 deterministically.
 - If the project has a `Gemfile`, tasks *without* gem declarations run under `bundle exec` and see the project's gems instead.
+
+## Rails applications
+
+- `requires :rails` is task-scoped and appears as `"requirements": ["rails"]` in metadata and tool definitions.
+- Discovery never loads the Rails application. Execution loads the project-root `config/environment.rb` immediately before the task block.
+- A Rails task requires the project-root `Gemfile`, Bundler, and a complete bundle. It never falls back to plain Ruby, uses the application's Bundler runtime instead of `RT_RUBY`, and removes activation state inherited from an outer `bundle exec`.
+- Rails tasks run with the project root as the working directory and receive it as a `Pathname` through `ctx.project_root`.
+- Rails tasks cannot be global or share a file with inline `gem` declarations.
+- Rails boot failures use exit 74 and JSON `error.kind: "environment"`, preserving the exception class, message, and backtrace.
 
 ## Project layout
 

@@ -1,4 +1,4 @@
-use crate::error::{RtError, TaskFailure};
+use crate::error::{ExceptionDetail, RtError};
 use crate::metadata::LoadError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -86,6 +86,12 @@ impl RunError {
                 Self::plain("internal", format!("internal error: {message}"))
             }
             RtError::Environment(message) => Self::plain("environment", message.clone()),
+            RtError::EnvironmentFailure(failure) => Self {
+                kind: "environment",
+                class: Some(failure.class.clone()),
+                message: failure.message.clone(),
+                backtrace: failure.backtrace.clone(),
+            },
             RtError::TaskExit(70) => {
                 Self::plain("internal", "task harness exited with code 70".to_string())
             }
@@ -99,7 +105,7 @@ impl RunError {
         }
     }
 
-    fn task(failure: &TaskFailure) -> Self {
+    fn task(failure: &ExceptionDetail) -> Self {
         Self {
             kind: "task_exception",
             class: Some(failure.class.clone()),
