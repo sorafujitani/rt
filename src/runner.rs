@@ -19,8 +19,8 @@ const CONTROL_FD: i32 = 3;
 const CONTROL_FD_ENV: &str = "RT_CONTROL_FD";
 const CAPTURE_LIMIT_BYTES: usize = 1024 * 1024;
 
-/// Metadata merged across roots, plus the interpreter that produced each root's
-/// metadata (needed to run a task with the same Ruby that discovered it).
+/// Metadata merged across roots, plus the discovery interpreter for each root.
+/// Execution may select and validate a separate project-bundle interpreter.
 struct Loaded {
     meta: Metadata,
     project: Option<(PathBuf, RubyCommand)>,
@@ -31,7 +31,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut project_meta = None;
     let mut project = None;
     if let Some(root) = &roots.project {
-        let ruby = RubyCommand::resolve(root, Source::Project, warn);
+        let ruby = RubyCommand::resolve_discovery(root, warn);
         let (meta, used) = cache::load(root, &ruby, warn)?;
         project_meta = Some(meta);
         project = Some((root.clone(), used));
@@ -40,7 +40,7 @@ fn load_all(roots: &Roots, warn: bool) -> Result<Loaded, RtError> {
     let mut global_meta = None;
     let mut global = None;
     if let Some(root) = &roots.global {
-        let ruby = RubyCommand::resolve(root, Source::Global, warn);
+        let ruby = RubyCommand::resolve_discovery(root, warn);
         let (meta, used) = cache::load(root, &ruby, warn)?;
         global_meta = Some(meta);
         global = Some((root.clone(), used));
@@ -210,9 +210,10 @@ fn prepare_run(
         }
     };
 
-    // A task runs against the root it was discovered in, with the interpreter
-    // that produced its metadata (which may differ per root).
-    let (root, ruby) = match task.source {
+    // A task runs against the root it was discovered in. Execution may select
+    // a different interpreter and revalidate metadata below.
+    let task_source = task.source;
+    let (root, discovery_ruby) = match task_source {
         Source::Project => loaded.project,
         Source::Global => loaded.global,
     }
@@ -221,7 +222,7 @@ fn prepare_run(
         load_errors: load_errors.clone(),
     })?;
     let rails = task.requirements.contains(&TaskRequirement::Rails);
-    let project_root = match task.source {
+    let project_root = match task_source {
         Source::Project => Some(
             root.parent()
                 .ok_or_else(|| PrepareError {
@@ -275,7 +276,32 @@ fn prepare_run(
         task.source = Source::Project;
         ruby
     } else if task.gems.is_empty() {
-        ruby
+        let runtime_ruby = RubyCommand::resolve_task(&root, task_source, warn);
+        if runtime_ruby.describe() == discovery_ruby.describe() {
+            discovery_ruby
+        } else {
+            let (mut runtime_meta, used) = ruby::discover_with_fallback(&root, &runtime_ruby, warn)
+                .map_err(|error| PrepareError {
+                    error,
+                    load_errors: load_errors.clone(),
+                })?;
+            for error in &mut runtime_meta.errors {
+                error.source = task_source;
+            }
+            load_errors.retain(|error| error.source != task_source);
+            load_errors.extend(runtime_meta.errors.clone());
+            task = runtime_meta
+                .find_task(task_name)
+                .cloned()
+                .ok_or_else(|| PrepareError {
+                    error: RtError::Environment(format!(
+                        "task {task_name:?} is not available in its execution bundle"
+                    )),
+                    load_errors: load_errors.clone(),
+                })?;
+            task.source = task_source;
+            used
+        }
     } else {
         RubyCommand::plain_isolated()
     };

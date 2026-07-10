@@ -10,8 +10,8 @@ use std::process::Command;
 const HARNESS: &str = include_str!("harness.rb");
 const BUNDLER_NIL: &str = "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL";
 
-/// How rt will invoke Ruby. Resolved once and reused for both discover and run
-/// so a mismatch cannot invalidate the cache mid-session.
+/// How rt will invoke Ruby. Discovery and execution resolve separately so
+/// metadata commands stay independent from an application's bundle.
 #[derive(Debug, Clone)]
 pub struct RubyCommand {
     program: String,
@@ -24,10 +24,11 @@ pub struct RubyCommand {
 }
 
 impl RubyCommand {
-    /// Resolution order: RT_RUBY -> `bundle exec ruby` (if a Gemfile and
-    /// bundle exist) -> plain `ruby` on PATH. `warn` is false in --json mode so
-    /// the fallback notice never pollutes stdout's JSON companion, stderr.
-    pub fn resolve(root: &Path, source: Source, warn: bool) -> Self {
+    /// Resolve the interpreter used to discover task declarations. A project
+    /// application's Gemfile is deliberately excluded: list/help/tools must
+    /// not require the application bundle. A Gemfile inside the task home is
+    /// still honored because it explicitly defines the discovery environment.
+    pub fn resolve_discovery(root: &Path, warn: bool) -> Self {
         if let Some(explicit) = std::env::var_os("RT_RUBY") {
             return RubyCommand {
                 program: explicit.to_string_lossy().into_owned(),
@@ -37,7 +38,7 @@ impl RubyCommand {
             };
         }
 
-        if let Some(gemfile) = find_gemfile(root, source) {
+        if let Some(gemfile) = task_home_gemfile(root) {
             if bundle_available() {
                 return RubyCommand {
                     program: "bundle".to_string(),
@@ -56,7 +57,40 @@ impl RubyCommand {
         Self::plain()
     }
 
-    /// Plain `ruby` on PATH, no Bundler wrapping.
+    /// Resolve the interpreter for a non-inline task at execution time. This
+    /// preserves project Gemfile support without coupling metadata discovery
+    /// to the application bundle.
+    pub fn resolve_task(root: &Path, source: Source, warn: bool) -> Self {
+        if let Some(explicit) = std::env::var_os("RT_RUBY") {
+            return RubyCommand {
+                program: explicit.to_string_lossy().into_owned(),
+                prep_args: Vec::new(),
+                bundle_gemfile: None,
+                isolated: false,
+            };
+        }
+
+        if let Some(gemfile) = find_task_gemfile(root, source) {
+            if bundle_available() {
+                return RubyCommand {
+                    program: "bundle".to_string(),
+                    prep_args: vec!["exec".to_string(), "ruby".to_string()],
+                    bundle_gemfile: Some(gemfile),
+                    isolated: false,
+                };
+            }
+            if warn {
+                output::print_warning(
+                    "found a Gemfile but `bundle` is not on PATH; falling back to plain ruby",
+                );
+            }
+        }
+
+        Self::plain()
+    }
+
+    /// Plain `ruby` on PATH with outer Bundler activation removed while
+    /// preserving ambient gem paths.
     pub fn plain() -> Self {
         RubyCommand {
             program: "ruby".to_string(),
@@ -156,6 +190,9 @@ impl RubyCommand {
             s.push_str(" @");
             s.push_str(&g.to_string_lossy());
         }
+        if self.bundle_gemfile.is_none() && !self.isolated {
+            s.push_str(" [unbundled]");
+        }
         s
     }
 
@@ -164,6 +201,10 @@ impl RubyCommand {
     pub fn command(&self, harness: &Path) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prep_args);
+
+        if self.bundle_gemfile.is_none() && !self.isolated {
+            restore_unbundled_environment(&mut cmd);
+        }
 
         // Minimal scrub on every path: a RUBYOPT/RUBYLIB inherited from the
         // caller's shell (e.g. rt launched under `bundle exec`) injects requires
@@ -207,12 +248,17 @@ impl RubyCommand {
 /// project home also checks its parent (the repo root, where a project's bundle
 /// usually lives); the global home's parent (e.g. ~/.config) is not a project
 /// root and must never be consulted.
-fn find_gemfile(root: &Path, source: Source) -> Option<PathBuf> {
+fn task_home_gemfile(root: &Path) -> Option<PathBuf> {
+    let gemfile = root.join("Gemfile");
+    gemfile.is_file().then_some(gemfile)
+}
+
+fn find_task_gemfile(root: &Path, source: Source) -> Option<PathBuf> {
     let parent = match source {
         Source::Project => root.parent().map(|p| p.join("Gemfile")),
         Source::Global => None,
     };
-    [Some(root.join("Gemfile")), parent]
+    [task_home_gemfile(root), parent]
         .into_iter()
         .flatten()
         .find(|g| g.is_file())
@@ -407,14 +453,25 @@ mod tests {
     }
 
     #[test]
-    fn plain_command_minimally_scrubs_only_rubyopt_and_rubylib() {
-        let cmd = RubyCommand::plain().command(Path::new("/h.rb"));
+    fn plain_command_removes_bundle_activation_but_preserves_gem_paths() {
+        let ruby = RubyCommand::plain();
+        let cmd = ruby.command(Path::new("/h.rb"));
         let removed = removed(&cmd);
-        assert!(removed.contains(&"RUBYOPT".to_string()));
-        assert!(removed.contains(&"RUBYLIB".to_string()));
+        for key in [
+            "RUBYOPT",
+            "RUBYLIB",
+            "BUNDLE_BIN_PATH",
+            "BUNDLE_GEMFILE",
+            "BUNDLE_LOCKFILE",
+            "BUNDLER_SETUP",
+            "BUNDLER_VERSION",
+        ] {
+            assert!(removed.contains(&key.to_string()), "plain must strip {key}");
+        }
         // GEM_HOME/GEM_PATH must survive so a bundle under the user's GEM_HOME works.
         assert!(!removed.contains(&"GEM_HOME".to_string()));
         assert!(!removed.contains(&"GEM_PATH".to_string()));
+        assert_eq!(ruby.describe(), "ruby [unbundled]");
     }
 
     #[test]

@@ -678,7 +678,7 @@ fn task_file_exiting_at_load_does_not_kill_discovery() {
 
 #[cfg(unix)]
 #[test]
-fn broken_bundle_exec_falls_back_to_plain_ruby() {
+fn broken_project_bundle_is_ignored_by_list_and_falls_back_during_run() {
     use std::os::unix::fs::PermissionsExt;
 
     let staged = stage("basic");
@@ -706,15 +706,25 @@ fn broken_bundle_exec_falls_back_to_plain_ruby() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    let assert = rt()
-        .arg("list")
+    rt().arg("list")
         .current_dir(staged.path())
         .env_remove("RT_ROOT")
         .env_remove("RT_RUBY")
         .env("PATH", &path)
         .assert()
         .success()
-        .stdout(predicates::str::contains("greet"));
+        .stdout(predicates::str::contains("greet"))
+        .stderr("");
+
+    let assert = rt()
+        .args(["run", "greet"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .env_remove("RT_RUBY")
+        .env("PATH", &path)
+        .assert()
+        .success()
+        .stdout("Hello, world!\n");
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     assert!(stderr.contains("plain ruby"), "expected fallback warning");
 
@@ -1531,7 +1541,7 @@ fn public_schema_version_is_refreshed_without_ruby() {
     let cache = serde_json::json!({
         "cache_format_version": 3,
         "harness_protocol_version": 3,
-        "ruby_command": "ruby",
+        "ruby_command": "ruby [unbundled]",
         "files": {},
         "metadata": {
             "protocol_version": 1,
@@ -1733,6 +1743,36 @@ fn rails_discovery_exposes_metadata_without_booting_the_application() {
         value["tools"][0]["requirements"],
         serde_json::json!(["rails"])
     );
+}
+
+#[test]
+fn rails_metadata_commands_ignore_an_incomplete_application_bundle() {
+    let staged = stage("rails");
+    std::fs::write(
+        staged.path().join("Gemfile"),
+        "source \"https://rubygems.org\"\ngem \"missing_local_gem\", path: \"vendor/missing\"\n",
+    )
+    .unwrap();
+
+    for args in [
+        vec!["list", "--json"],
+        vec!["help", "rails:probe", "--json"],
+        vec!["tools", "--json", "rails:probe"],
+    ] {
+        let out = rt()
+            .args(args)
+            .current_dir(staged.path())
+            .env_remove("RT_ROOT")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(
+            out.stderr.is_empty(),
+            "metadata discovery must not inspect the application bundle: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("rails:probe"));
+    }
 }
 
 #[test]
