@@ -2,11 +2,13 @@ use crate::error::RtError;
 use crate::metadata::{HarnessMetadata, Metadata, Source, HARNESS_PROTOCOL_VERSION};
 use crate::output;
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const HARNESS: &str = include_str!("harness.rb");
+const BUNDLER_NIL: &str = "BUNDLER_ENVIRONMENT_PRESERVER_INTENTIONALLY_NIL";
 
 /// How rt will invoke Ruby. Resolved once and reused for both discover and run
 /// so a mismatch cannot invalidate the cache mid-session.
@@ -92,11 +94,6 @@ impl RubyCommand {
                 gemfile.display()
             )));
         }
-        if !bundle_available() {
-            return Err(RtError::Environment(
-                "Rails task requires Bundler, but `bundle` is not available on PATH".to_string(),
-            ));
-        }
         Ok(RubyCommand {
             program: "bundle".to_string(),
             prep_args: vec!["exec".to_string(), "ruby".to_string()],
@@ -111,15 +108,18 @@ impl RubyCommand {
         let gemfile = self.bundle_gemfile.as_ref().ok_or_else(|| {
             RtError::Internal("Rails task resolved without a Gemfile".to_string())
         })?;
-        let output = Command::new("bundle")
+        let mut command = Command::new("bundle");
+        configure_bundle_environment(&mut command, gemfile);
+        let output = command
             .arg("check")
-            .env("BUNDLE_GEMFILE", gemfile)
-            .env_remove("RUBYOPT")
-            .env_remove("RUBYLIB")
             .current_dir(project_root)
             .output()
-            .map_err(|e| {
-                RtError::Environment(format!("could not start Bundler for Rails task: {e}"))
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => RtError::Environment(
+                    "Rails task requires Bundler, but `bundle` is not available on PATH"
+                        .to_string(),
+                ),
+                _ => RtError::Environment(format!("could not start Bundler for Rails task: {e}")),
             })?;
         if output.status.success() {
             return Ok(());
@@ -172,8 +172,8 @@ impl RubyCommand {
         cmd.env_remove("RUBYOPT");
         cmd.env_remove("RUBYLIB");
 
-        if let Some(g) = &self.bundle_gemfile {
-            cmd.env("BUNDLE_GEMFILE", g);
+        if let Some(gemfile) = &self.bundle_gemfile {
+            configure_bundle_environment(&mut cmd, gemfile);
         }
 
         if self.isolated {
@@ -219,13 +219,61 @@ fn find_gemfile(root: &Path, source: Source) -> Option<PathBuf> {
 }
 
 fn bundle_available() -> bool {
-    Command::new("bundle")
+    let mut command = Command::new("bundle");
+    restore_unbundled_environment(&mut command);
+    command
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Restore the environment that existed before an outer `bundle exec` was
+/// activated. Bundler documents this boundary as required when entering a
+/// different bundle. User configuration such as BUNDLE_PATH is preserved.
+fn restore_unbundled_environment(command: &mut Command) {
+    for (target, original) in [
+        ("PATH", "BUNDLER_ORIG_PATH"),
+        ("GEM_HOME", "BUNDLER_ORIG_GEM_HOME"),
+        ("GEM_PATH", "BUNDLER_ORIG_GEM_PATH"),
+        ("MANPATH", "BUNDLER_ORIG_MANPATH"),
+        ("RB_USER_INSTALL", "BUNDLER_ORIG_RB_USER_INSTALL"),
+        ("RUBYOPT", "BUNDLER_ORIG_RUBYOPT"),
+        ("RUBYLIB", "BUNDLER_ORIG_RUBYLIB"),
+    ] {
+        if let Some(value) = std::env::var_os(original) {
+            if value == OsStr::new(BUNDLER_NIL) {
+                command.env_remove(target);
+            } else {
+                command.env(target, value);
+            }
+        }
+    }
+
+    for key in [
+        "BUNDLE_BIN_PATH",
+        "BUNDLE_GEMFILE",
+        "BUNDLE_LOCKFILE",
+        "BUNDLER_SETUP",
+        "BUNDLER_VERSION",
+        "RUBYOPT",
+        "RUBYLIB",
+    ] {
+        command.env_remove(key);
+    }
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("BUNDLER_ORIG_") {
+            command.env_remove(key);
+        }
+    }
+}
+
+fn configure_bundle_environment(command: &mut Command, gemfile: &Path) {
+    restore_unbundled_environment(command);
+    command.env("BUNDLE_GEMFILE", gemfile);
+    command.env("BUNDLE_LOCKFILE", gemfile.with_file_name("Gemfile.lock"));
 }
 
 /// Create the task home and converge rt-managed ignore rules. This runs even

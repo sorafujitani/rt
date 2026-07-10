@@ -185,7 +185,7 @@ end
 
 - `requires :rails` is task-scoped and appears as `"requirements": ["rails"]` in metadata and tool definitions.
 - Discovery never loads the Rails application. Execution loads the project-root `config/environment.rb` immediately before the task block.
-- A Rails task requires the project-root `Gemfile`, Bundler, and a complete bundle. It never falls back to plain Ruby and uses the application's Bundler runtime instead of `RT_RUBY`.
+- A Rails task requires the project-root `Gemfile`, Bundler, and a complete bundle. It never falls back to plain Ruby, uses the application's Bundler runtime instead of `RT_RUBY`, and removes activation state inherited from an outer `bundle exec`.
 - Rails tasks run with the project root as the working directory and receive it as a `Pathname` through `ctx.project_root`.
 - Rails tasks cannot be global or share a file with inline `gem` declarations.
 - Rails boot failures use exit 74 and JSON `error.kind: "environment"`, preserving the exception class, message, and backtrace.

@@ -213,8 +213,9 @@ When migrating from Rake, replace `task name: :environment` with
 `"users:cleanup"`), and move prerequisite behavior into ordinary Ruby classes
 or modules. rt does not load Rakefiles or implement Rake task graphs.
 
-The initial integration matrix is Rails 8.1, Ruby 3.4, and Bundler 2.6. Other
-application bundles may work, but are not part of the verified matrix yet.
+The dedicated Rails integration CI job verifies Rails 8.1, Ruby 3.4, Bundler
+2.6, Active Record, and SQLite. Other application bundles may work, but are not
+part of the verified matrix yet.
 
 ## Commands
 
@@ -375,6 +376,8 @@ optimization for projects that already use it.
 Rails tasks are the strict exception: they require the project-root `Gemfile`
 and a complete bundle, never use the plain-Ruby fallback, and ignore an
 `.rt/Gemfile` and `RT_RUBY` in favor of the Rails application's Bundler runtime.
+Inherited activation from an outer `bundle exec` is removed before entering the
+application bundle, so its Gemfile and lockfile remain isolated.
 
 On every path, rt strips `RUBYOPT` and `RUBYLIB` from the Ruby it launches, so a
 value inherited from the surrounding shell (common under `bundle exec`) cannot

@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+# Lightweight harness-contract fixture. The real Rails integration fixture is
+# tests/fixtures/rails_real.
+
 module Rails
   def self.env
     ENV.fetch("RAILS_ENV", "development")

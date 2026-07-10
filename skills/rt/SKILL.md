@@ -140,4 +140,5 @@ If Bundler is missing or `bundle exec` fails, rt warns and falls back to plain `
 
 Rails tasks never use the plain-Ruby fallback. A missing project `Gemfile`,
 missing Bundler, incomplete bundle, or Rails boot failure exits 74. Rails task
-execution uses the application's Bundler runtime rather than `RT_RUBY`.
+execution uses the application's Bundler runtime rather than `RT_RUBY` and
+does not reuse activation state from an outer `bundle exec`.

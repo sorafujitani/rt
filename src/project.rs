@@ -44,6 +44,13 @@ pub fn find_roots() -> Result<Roots, RtError> {
 fn find_project() -> Result<Option<PathBuf>, RtError> {
     if let Some(explicit) = std::env::var_os("RT_ROOT") {
         let root = PathBuf::from(explicit);
+        let root = if root.is_absolute() {
+            root
+        } else {
+            std::env::current_dir()
+                .map_err(|e| RtError::Internal(format!("cannot read current directory: {e}")))?
+                .join(root)
+        };
         if let Some(home) = home_of(&root) {
             return Ok(Some(home));
         }

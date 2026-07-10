@@ -1,4 +1,4 @@
-use crate::error::{RtError, TaskFailure};
+use crate::error::{ExceptionDetail, RtError};
 use crate::metadata::LoadError;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -105,7 +105,7 @@ impl RunError {
         }
     }
 
-    fn task(failure: &TaskFailure) -> Self {
+    fn task(failure: &ExceptionDetail) -> Self {
         Self {
             kind: "task_exception",
             class: Some(failure.class.clone()),

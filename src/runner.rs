@@ -177,6 +177,7 @@ fn unknown_task(meta: &Metadata, task: &str) -> RtError {
 struct PreparedRun {
     root: PathBuf,
     ruby: RubyCommand,
+    project_root: Option<PathBuf>,
     working_dir: Option<PathBuf>,
     input: Vec<u8>,
     load_errors: Vec<LoadError>,
@@ -197,9 +198,9 @@ fn prepare_run(
         error,
         load_errors: Vec::new(),
     })?;
-    let load_errors = loaded.meta.errors.clone();
+    let mut load_errors = loaded.meta.errors.clone();
     // Clone to end the borrow on loaded.meta before moving a root out of loaded.
-    let task = match loaded.meta.find_task(task_name) {
+    let mut task = match loaded.meta.find_task(task_name) {
         Some(t) => t.clone(),
         None => {
             return Err(PrepareError {
@@ -219,11 +220,6 @@ fn prepare_run(
         error: RtError::Internal("resolved task has no backing root".to_string()),
         load_errors: load_errors.clone(),
     })?;
-    let parsed = args::parse(&task, raw_args).map_err(|error| PrepareError {
-        error,
-        load_errors: load_errors.clone(),
-    })?;
-
     let rails = task.requirements.contains(&TaskRequirement::Rails);
     let project_root = match task.source {
         Source::Project => Some(
@@ -239,18 +235,6 @@ fn prepare_run(
         Source::Global => None,
     };
 
-    let input = json!({
-        "task": task_name,
-        "params": parsed.params,
-        "options": parsed.options,
-        "dry_run": parsed.dry_run,
-        "project_root": project_root,
-    });
-    let input = serde_json::to_vec(&input).map_err(|e| PrepareError {
-        error: RtError::Internal(format!("cannot serialize task args: {e}")),
-        load_errors: load_errors.clone(),
-    })?;
-
     // A task declaring inline gems must run self-contained: bundler/inline
     // fights an active `bundle exec`, so drop to isolated plain Ruby.
     let ruby = if rails {
@@ -263,6 +247,32 @@ fn prepare_run(
                 error,
                 load_errors: load_errors.clone(),
             })?;
+
+        // Rails tasks must be validated and executed under the same application
+        // bundle. The initial discovery may have used RT_RUBY or .rt/Gemfile,
+        // so its metadata is only enough to identify the Rails requirement.
+        let mut rails_meta = ruby::discover(&root, &ruby).map_err(|error| PrepareError {
+            error: RtError::Environment(format!(
+                "could not discover Rails tasks in the application bundle: {error}"
+            )),
+            load_errors: load_errors.clone(),
+        })?;
+        for error in &mut rails_meta.errors {
+            error.source = Source::Project;
+        }
+        load_errors.retain(|error| error.source == Source::Global);
+        load_errors.extend(rails_meta.errors.clone());
+        task = rails_meta
+            .find_task(task_name)
+            .filter(|task| task.requirements.contains(&TaskRequirement::Rails))
+            .cloned()
+            .ok_or_else(|| PrepareError {
+                error: RtError::Environment(format!(
+                    "Rails task {task_name:?} is not available in the application bundle"
+                )),
+                load_errors: load_errors.clone(),
+            })?;
+        task.source = Source::Project;
         ruby
     } else if task.gems.is_empty() {
         ruby
@@ -270,14 +280,32 @@ fn prepare_run(
         RubyCommand::plain_isolated()
     };
 
+    let parsed = args::parse(&task, raw_args).map_err(|error| PrepareError {
+        error,
+        load_errors: load_errors.clone(),
+    })?;
+    let input = json!({
+        "task": task_name,
+        "params": parsed.params,
+        "options": parsed.options,
+        "dry_run": parsed.dry_run,
+    });
+    let input = serde_json::to_vec(&input).map_err(|e| PrepareError {
+        error: RtError::Internal(format!("cannot serialize task args: {e}")),
+        load_errors: load_errors.clone(),
+    })?;
+
+    let working_dir = rails.then(|| {
+        project_root
+            .clone()
+            .expect("Rails requirement is only valid for project tasks")
+    });
+
     Ok(PreparedRun {
         root,
         ruby,
-        working_dir: rails.then(|| {
-            project_root
-                .clone()
-                .expect("Rails requirement is only valid for project tasks")
-        }),
+        project_root,
+        working_dir,
         input,
         load_errors,
     })
@@ -294,6 +322,7 @@ pub fn run(roots: &Roots, task_name: &str, raw_args: &[String]) -> Result<(), Rt
         .arg("--run")
         .arg(root)
         .arg(task_name)
+        .args(prepared.project_root.iter())
         .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -398,6 +427,7 @@ fn run_captured(prepared: PreparedRun, task_name: &str) -> Result<CapturedRun, R
         .arg("--run")
         .arg(root)
         .arg(task_name)
+        .args(prepared.project_root.iter())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

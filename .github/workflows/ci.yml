@@ -23,3 +23,20 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+
+  rails-integration:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      # dtolnay/rust-toolchain stable, pinned 2026-07-10
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: stable
+      # ruby/setup-ruby, pinned 2026-07-10
+      - uses: ruby/setup-ruby@d45b1a4e94b71acab930e56e79c6aa188764e7f9
+        with:
+          ruby-version: "3.4"
+      - run: bundle install
+        working-directory: tests/fixtures/rails_real
+      - run: cargo test --locked real_rails_application_uses_active_record -- --ignored

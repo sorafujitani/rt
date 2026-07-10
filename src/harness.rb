@@ -525,7 +525,7 @@ def load_rails_environment(project_root, control, root)
   end
 end
 
-def run_task(root, name)
+def run_task(root, name, project_root)
   control_fd = ENV.delete(CONTROL_FD_ENV)
   abort "rt: missing task control fd" if control_fd.nil?
   control = IO.for_fd(Integer(control_fd), "w", autoclose: false)
@@ -536,7 +536,6 @@ def run_task(root, name)
   params = args["params"] || {}
   options = args["options"] || {}
   dry_run = args["dry_run"] ? true : false
-  project_root = args["project_root"]
 
   with_silenced_stdout { load_tasks(root) }
 
@@ -587,8 +586,9 @@ def main(argv)
   when "--run"
     root = argv[1]
     name = argv[2]
+    project_root = argv[3]
     abort "rt: --run requires <root> <task>" if root.nil? || name.nil?
-    run_task(root, name)
+    run_task(root, name, project_root)
   else
     abort "rt: unknown harness mode #{mode.inspect}"
   end
