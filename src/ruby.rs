@@ -79,6 +79,68 @@ impl RubyCommand {
         }
     }
 
+    /// Resolve the application bundle for a Rails task. Unlike normal task
+    /// discovery, this path is strict: Rails cannot run under plain Ruby.
+    pub fn resolve_rails(root: &Path) -> Result<Self, RtError> {
+        let project_root = root.parent().ok_or_else(|| {
+            RtError::Internal("project task home has no parent directory".to_string())
+        })?;
+        let gemfile = project_root.join("Gemfile");
+        if !gemfile.is_file() {
+            return Err(RtError::Environment(format!(
+                "Rails task requires a project Gemfile at {}",
+                gemfile.display()
+            )));
+        }
+        if !bundle_available() {
+            return Err(RtError::Environment(
+                "Rails task requires Bundler, but `bundle` is not available on PATH".to_string(),
+            ));
+        }
+        Ok(RubyCommand {
+            program: "bundle".to_string(),
+            prep_args: vec!["exec".to_string(), "ruby".to_string()],
+            bundle_gemfile: Some(gemfile),
+            isolated: false,
+        })
+    }
+
+    /// Prove the project bundle is complete before spawning the harness. This
+    /// keeps failures before the harness in the environment-error contract.
+    pub fn check_bundle(&self, project_root: &Path) -> Result<(), RtError> {
+        let gemfile = self.bundle_gemfile.as_ref().ok_or_else(|| {
+            RtError::Internal("Rails task resolved without a Gemfile".to_string())
+        })?;
+        let output = Command::new("bundle")
+            .arg("check")
+            .env("BUNDLE_GEMFILE", gemfile)
+            .env_remove("RUBYOPT")
+            .env_remove("RUBYLIB")
+            .current_dir(project_root)
+            .output()
+            .map_err(|e| {
+                RtError::Environment(format!("could not start Bundler for Rails task: {e}"))
+            })?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        let suffix = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        };
+        Err(RtError::Environment(format!(
+            "Rails task bundle is incomplete{suffix}"
+        )))
+    }
+
     fn is_bundle(&self) -> bool {
         self.bundle_gemfile.is_some()
     }

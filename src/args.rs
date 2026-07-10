@@ -186,6 +186,7 @@ mod tests {
                 },
             ],
             gems: Vec::new(),
+            requirements: Vec::new(),
             source: crate::metadata::Source::Project,
         }
     }

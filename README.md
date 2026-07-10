@@ -80,7 +80,7 @@ discovery.
 ## Writing tasks
 
 Task files are loaded from `.rt/tasks/**/*.rb`. The DSL uses a pending-buffer
-model like Rake: `desc`, `param`, and `option` describe the next `task`.
+model: `desc`, `param`, `option`, and `requires` describe the next `task`.
 
 ```ruby
 desc "Deploy the application to an environment"
@@ -107,9 +107,12 @@ end
   `dry_run` and `dry-run` are reserved by rt. Option defaults must match their
   declared type. Invalid declarations are reported as `InvalidDeclaration`
   load errors and the invalid task is not registered.
+- `requires :rails` marks a project task that boots the Rails application
+  immediately before its block runs. Requirements are task-scoped.
 - The block receives a context: `ctx.param(:name)`, `ctx.option(:name)`,
-  `ctx.dry_run?`, and `ctx.say(message)` for output. A bare `return` inside a
-  task body is a valid early exit.
+  `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)` for output.
+  `ctx.project_root` is a `Pathname` for project tasks and `nil` for global
+  tasks. A bare `return` inside a task body is a valid early exit.
 
 The task name is exactly what you declare; there is no automatic namespacing
 from file paths. Declaring the same name twice is reported as an error.
@@ -171,6 +174,48 @@ added by hand under a version manager like rbenv — may be visible to a task
 without being declared. Declare every gem a task needs so it does not depend on
 that.
 
+### Rails application tasks
+
+Use `requires :rails` when a task needs application models, configuration, or
+database connections:
+
+```ruby
+desc "Delete inactive users"
+requires :rails
+option :days, type: :integer, default: 90, description: "inactive period"
+task "users:cleanup" do |ctx|
+  users = User.where(last_active_at: ...ctx.option(:days).days.ago)
+  ctx.say "#{users.count} users will be deleted"
+  return if ctx.dry_run?
+
+  users.delete_all
+end
+```
+
+Discovery commands (`list`, `help`, and `tools`) record the requirement but do
+not load `config/environment.rb` or run Rails initializers. `run` requires the
+project-root `Gemfile`, verifies the bundle, changes the child working directory
+to the project root, and then loads `config/environment.rb` before the task
+block. `RAILS_ENV` is inherited normally:
+
+```sh
+RAILS_ENV=production rt run users:cleanup --dry-run
+```
+
+Rails tasks cannot be global tasks and cannot share a task file with top-level
+inline `gem` declarations. Application dependencies belong in the Rails
+project's `Gemfile`. Missing Bundler dependencies and Rails boot failures are
+environment errors (exit 74); JSON results preserve the exception class,
+message, and backtrace.
+
+When migrating from Rake, replace `task name: :environment` with
+`requires :rails`, write the fully-qualified task name directly (for example
+`"users:cleanup"`), and move prerequisite behavior into ordinary Ruby classes
+or modules. rt does not load Rakefiles or implement Rake task graphs.
+
+The initial integration matrix is Rails 8.1, Ruby 3.4, and Bundler 2.6. Other
+application bundles may work, but are not part of the verified matrix yet.
+
 ## Commands
 
 - `rt list` — list tasks with descriptions.
@@ -193,12 +238,13 @@ top-level catalog shape with one tool: `rt tools --json greet`.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "tools": [
     {
       "task": "greet",
       "description": "Greet someone by name",
       "source": "project",
+      "requirements": [],
       "input_schema": {
         "type": "object",
         "properties": {
@@ -325,6 +371,10 @@ back to plain `ruby`. If `bundle exec` is installed but fails (for example when
 the bundle's gems are not installed), rt warns and retries discovery once with
 plain `ruby`. The plain-Ruby path is the primary one; Bundler is only an
 optimization for projects that already use it.
+
+Rails tasks are the strict exception: they require the project-root `Gemfile`
+and a complete bundle, never use the plain-Ruby fallback, and ignore an
+`.rt/Gemfile` and `RT_RUBY` in favor of the Rails application's Bundler runtime.
 
 On every path, rt strips `RUBYOPT` and `RUBYLIB` from the Ruby it launches, so a
 value inherited from the surrounding shell (common under `bundle exec`) cannot

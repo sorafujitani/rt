@@ -6,15 +6,16 @@
 #   --emit-metadata <root>  load tasks/**/*.rb and print metadata JSON
 #   --run <root> <task>     read args JSON from stdin and execute one task
 #
-# The DSL (task/desc/param/option) is extended onto the top-level object so
+# The DSL (task/desc/param/option/requires) is extended onto the top-level object so
 # task files read naturally, while shared state lives on the RT module.
 
 require "json"
 require "stringio"
 require "fileutils"
+require "pathname"
 require "rbconfig"
 
-HARNESS_PROTOCOL_VERSION = 2
+HARNESS_PROTOCOL_VERSION = 3
 CONTROL_FD_ENV = "RT_CONTROL_FD"
 
 module RT
@@ -22,13 +23,14 @@ module RT
   RESERVED_ARGUMENT_NAMES = %w[dry-run dry_run].freeze
 
   class Task
-    attr_reader :name, :description, :params, :options, :file, :block
+    attr_reader :name, :description, :params, :options, :requirements, :file, :block
 
-    def initialize(name:, description:, params:, options:, file:, block:)
+    def initialize(name:, description:, params:, options:, requirements:, file:, block:)
       @name = name
       @description = description
       @params = params
       @options = options
+      @requirements = requirements
       @file = file
       @block = block
     end
@@ -40,7 +42,8 @@ module RT
         "file" => @file,
         "params" => @params.map(&:to_meta),
         "options" => @options.map(&:to_meta),
-        "gems" => RT.gems_for(@file)
+        "gems" => RT.gems_for(@file),
+        "requirements" => @requirements
       }
     end
 
@@ -60,6 +63,15 @@ module RT
       end
       ((param_names + option_names) & RESERVED_ARGUMENT_NAMES).each do |name|
         errors << "name #{name.inspect} is reserved by rt"
+      end
+      duplicate_names(@requirements).each do |name|
+        errors << "duplicate requirement #{name.inspect}"
+      end
+      (@requirements - ["rails"]).each do |name|
+        errors << "unknown requirement #{name.inspect}"
+      end
+      if @requirements.include?("rails") && !RT.gems_for(@file).empty?
+        errors << "Rails tasks cannot declare inline gems"
       end
 
       @params.each { |param| errors.concat(param.declaration_errors) }
@@ -185,15 +197,34 @@ module RT
     def record_error(file:, klass:, message:)
       @errors << { "file" => file, "class" => klass, "message" => message }
     end
+
+    # Inline gem declarations apply to every task in their file, including a
+    # declaration written after a task. Recheck at end-of-file so ordering
+    # cannot bypass the Rails/isolated-gem boundary.
+    def validate_file(file)
+      invalid = @tasks.select do |task|
+        task.file == file && task.requirements.include?("rails") && !RT.gems_for(file).empty?
+      end
+      invalid.each do |task|
+        @tasks.delete(task)
+        @by_name.delete(task.name)
+        record_error(
+          file: file,
+          klass: "InvalidDeclaration",
+          message: "task #{task.name.inspect}: Rails tasks cannot declare inline gems"
+        )
+      end
+    end
   end
 
   class Context
-    attr_reader :params, :options
+    attr_reader :params, :options, :project_root
 
-    def initialize(params:, options:, dry_run:)
+    def initialize(params:, options:, dry_run:, project_root:)
       @params = params
       @options = options
       @dry_run = dry_run
+      @project_root = project_root.nil? ? nil : Pathname.new(project_root)
     end
 
     def dry_run?
@@ -217,8 +248,7 @@ module RT
     end
   end
 
-  # DSL accumulates desc/param/option in a pending buffer, consumed when the
-  # next `task` is declared (the Rake `desc` model).
+  # DSL declarations accumulate in a pending buffer consumed by the next task.
   module DSL
     def desc(text)
       RT.pending[:description] = text
@@ -255,6 +285,10 @@ module RT
       )
     end
 
+    def requires(*requirements)
+      RT.pending[:requirements].concat(requirements.map(&:to_s))
+    end
+
     def task(name, &block)
       pending = RT.consume_pending
       RT.registry.add(Task.new(
@@ -262,6 +296,7 @@ module RT
         description: pending[:description],
         params: pending[:params],
         options: pending[:options],
+        requirements: pending[:requirements],
         file: RT.current_file,
         block: block
       ))
@@ -294,7 +329,7 @@ module RT
     end
 
     def fresh_pending
-      { description: nil, params: [], options: [] }
+      { description: nil, params: [], options: [], requirements: [] }
     end
   end
 end
@@ -331,6 +366,8 @@ def load_tasks(root)
         message += " (declared gems must be required inside the task block, not at the top level)"
       end
       RT.registry.record_error(file: rel, klass: e.class.name, message: message)
+    ensure
+      RT.registry.validate_file(rel)
     end
   end
   RT.current_file = nil
@@ -459,6 +496,35 @@ def install_gems(gems)
   end
 end
 
+def write_failure(control, kind, error, root)
+  payload = {
+    "kind" => kind,
+    "class" => error.class.name,
+    "message" => error.message,
+    "backtrace" => clean_backtrace(root, error.backtrace)
+  }
+  control.write(JSON.generate(payload))
+  control.flush
+end
+
+def load_rails_environment(project_root, control, root)
+  environment = File.join(project_root, "config", "environment.rb")
+  begin
+    unless File.file?(environment)
+      raise LoadError, "Rails environment not found at #{environment}"
+    end
+    require environment
+  rescue SystemExit => e
+    error = RuntimeError.new("Rails environment exited with code #{e.status}")
+    error.set_backtrace(e.backtrace)
+    write_failure(control, "environment", error, root)
+    exit 74
+  rescue ScriptError, StandardError => e
+    write_failure(control, "environment", e, root)
+    exit 74
+  end
+end
+
 def run_task(root, name)
   control_fd = ENV.delete(CONTROL_FD_ENV)
   abort "rt: missing task control fd" if control_fd.nil?
@@ -470,6 +536,7 @@ def run_task(root, name)
   params = args["params"] || {}
   options = args["options"] || {}
   dry_run = args["dry_run"] ? true : false
+  project_root = args["project_root"]
 
   with_silenced_stdout { load_tasks(root) }
 
@@ -483,7 +550,21 @@ def run_task(root, name)
   # so they must be resolvable before the block runs.
   install_gems(RT.gems_for(task.file))
 
-  ctx = RT::Context.new(params: params, options: options, dry_run: dry_run)
+  if task.requirements.include?("rails")
+    if project_root.nil?
+      error = RuntimeError.new("Rails task is missing its project root")
+      write_failure(control, "environment", error, root)
+      exit 74
+    end
+    load_rails_environment(project_root, control, root)
+  end
+
+  ctx = RT::Context.new(
+    params: params,
+    options: options,
+    dry_run: dry_run,
+    project_root: project_root
+  )
   begin
     # Turn the block into a method so a bare `return` inside a task is a valid
     # early exit rather than a LocalJumpError.
@@ -491,13 +572,7 @@ def run_task(root, name)
     runner.define_singleton_method(:__rt_task__, &task.block)
     runner.__rt_task__(ctx)
   rescue ScriptError, StandardError => e
-    payload = {
-      "class" => e.class.name,
-      "message" => e.message,
-      "backtrace" => clean_backtrace(root, e.backtrace)
-    }
-    control.write(JSON.generate(payload))
-    control.flush
+    write_failure(control, "task_exception", e, root)
     exit 1
   end
 end

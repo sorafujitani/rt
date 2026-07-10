@@ -1,9 +1,9 @@
-use crate::metadata::{LoadError, Metadata, OptionType, Source, Task};
+use crate::metadata::{LoadError, Metadata, OptionType, Source, Task, TaskRequirement};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub(crate) const TOOL_CATALOG_SCHEMA_VERSION: u32 = 1;
+pub(crate) const TOOL_CATALOG_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ToolCatalog {
@@ -17,6 +17,7 @@ struct ToolDefinition {
     task: String,
     description: Option<String>,
     source: Source,
+    requirements: Vec<TaskRequirement>,
     input_schema: InputSchema,
 }
 
@@ -115,6 +116,7 @@ impl ToolDefinition {
             task: task.name.clone(),
             description: task.description.clone(),
             source: task.source,
+            requirements: task.requirements.clone(),
             input_schema: InputSchema {
                 schema_type: JsonType::Object,
                 properties,
@@ -190,6 +192,7 @@ mod tests {
                     },
                 ],
                 gems: Vec::new(),
+                requirements: vec![TaskRequirement::Rails],
                 source: Source::Global,
             }],
             errors: vec![LoadError {
@@ -203,11 +206,12 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ToolCatalog::from_metadata(&metadata)).unwrap(),
             json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "tools": [{
                     "task": "deploy:prod/v1",
                     "description": "Deploy the application",
                     "source": "global",
+                    "requirements": ["rails"],
                     "input_schema": {
                         "type": "object",
                         "properties": {

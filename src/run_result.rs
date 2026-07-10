@@ -86,6 +86,12 @@ impl RunError {
                 Self::plain("internal", format!("internal error: {message}"))
             }
             RtError::Environment(message) => Self::plain("environment", message.clone()),
+            RtError::EnvironmentFailure(failure) => Self {
+                kind: "environment",
+                class: Some(failure.class.clone()),
+                message: failure.message.clone(),
+                backtrace: failure.backtrace.clone(),
+            },
             RtError::TaskExit(70) => {
                 Self::plain("internal", "task harness exited with code 70".to_string())
             }
