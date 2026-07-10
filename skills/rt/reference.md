@@ -38,6 +38,63 @@ Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in t
 `protocol_version` versions this public metadata schema; it is independent of
 rt's private Ruby harness protocol and on-disk cache format.
 
+`rt tools --json [task]`:
+
+```json
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "task": "deploy",
+      "description": "Deploy the application to an environment",
+      "source": "project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Set the task's dry-run flag",
+            "default": false
+          },
+          "environment": {
+            "type": "string",
+            "description": "target environment",
+            "enum": ["staging", "production"]
+          },
+          "force": {
+            "type": "boolean",
+            "description": "skip safety checks",
+            "default": false
+          },
+          "workers": {
+            "type": "integer",
+            "description": "worker count",
+            "default": 2
+          }
+        },
+        "required": ["environment"],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "errors": []
+}
+```
+
+`schema_version` versions the tool catalog independently from metadata and run
+results. `task` and `source` preserve the merged metadata values. Properties
+combine params, options, and `dry_run` into one object namespace. Params are
+strings; option types remain `string`, `integer`, or `boolean`. Required params
+appear in `required`. Null defaults are omitted, while a boolean with no
+declared default has the effective default `false`. Every input schema sets
+`additionalProperties` to `false`.
+
+Without `[task]`, `tools` contains every merged project/global task. With a
+task filter, the top-level shape and load `errors` remain unchanged. An unknown
+task is a usage error with exit code 2. The command requires `--json`. Catalog
+`errors` use the same load-error shape shown for `list --json`, including
+`ShadowedTask` entries from project/global name collisions.
+
 `rt run --json <task> [args...]`:
 
 ```json
