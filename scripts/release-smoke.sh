@@ -35,9 +35,9 @@ ruby -rjson -e '
   help = JSON.parse(File.read(ARGV.fetch(1)))
   tools = JSON.parse(File.read(ARGV.fetch(2)))
   run = JSON.parse(File.read(ARGV.fetch(3)))
-  abort "unexpected list schema" unless list["protocol_version"] == 2 && list["tasks"][0]["name"] == "greet"
-  abort "unexpected help schema" unless help["protocol_version"] == 2 && help["task"]["name"] == "greet"
-  abort "unexpected tools schema" unless tools["schema_version"] == 1 && tools["tools"][0]["task"] == "greet"
+  abort "unexpected list schema" unless list["protocol_version"] == 3 && list["tasks"][0]["name"] == "greet"
+  abort "unexpected help schema" unless help["protocol_version"] == 3 && help["task"]["name"] == "greet"
+  abort "unexpected tools schema" unless tools["schema_version"] == 2 && tools["tools"][0]["task"] == "greet"
   abort "unexpected run result" unless run["schema_version"] == 2 && run["status"] == "success" && run["stdout"]["data"] == "Hello, release!\n"
 ' "$root/list.json" "$root/help.json" "$root/tools.json" "$root/run.json"
 
