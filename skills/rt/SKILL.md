@@ -1,7 +1,6 @@
 ---
 name: rt
-description: Discover, run, and author rt tasks. rt turns Ruby scripts in a .rt/tasks/ directory into a CLI with help, validation, JSON metadata, and dry-run. Use when a repo contains a .rt/ directory, when asked to list or run rt tasks, or when asked to automate something with rt.
-license: MIT
+description: Discover, inspect, run, and author rt tasks. rt turns Ruby scripts in a .rt/tasks/ directory into a CLI with validation, vendor-neutral tool schemas, structured execution results, and dry-run. Use when a repo contains a .rt/ directory, when asked to discover or run its tasks, or when automating repository workflows with rt.
 ---
 
 # rt
@@ -12,19 +11,29 @@ Detect rt in a repo by the presence of a `.rt/` directory. rt finds the project 
 
 ## Discover and run tasks
 
-Prefer the JSON commands. They print JSON on stdout and nothing else, with full type information for params and options. Load errors appear in the JSON `errors` array, not on stderr.
+For agent-facing discovery, start with the tool catalog:
 
 ```bash
-rt list --json          # all tasks: name, description, file, params, options, gems, source
-rt help <task> --json   # usage metadata for one task
-rt run --json <task> [args...] # run and capture status, output, and errors as JSON
+rt tools --json             # all tasks as vendor-neutral object input schemas
+rt tools --json <task>      # one task, with the same top-level catalog shape
+rt help <task> --json       # ordered params and named options for CLI invocation
+rt run --json <task> [args...] # structured execution result
 ```
 
-Params are passed as positional arguments and options as flags:
+Treat each catalog entry's `task` as an exact identifier; do not normalize it.
+Check the catalog's `errors` before selecting a tool. To invoke an input object,
+use `help --json` to map params to declaration-order positionals, options to
+`--name value` flags, and `dry_run: true` to `--dry-run`. Omit false boolean
+options and values that should use their defaults.
+
+For example, map `{"environment":"production","workers":4,"force":true}` to:
 
 ```bash
-rt run deploy production --workers 4 --force
+rt run --json deploy production --workers 4 --force
 ```
+
+Use `rt list --json` when raw task files, gem requirements, or full declaration
+metadata are needed rather than a tool schema.
 
 Prefer `rt run --json` when an agent needs to interpret the result. It emits one
 JSON object on stdout and nothing on stderr, including on task, usage, and
@@ -82,7 +91,7 @@ Declare gems a task needs with top-level `gem` lines. rt resolves them with `bun
 
 rt also loads machine-wide tasks from `<config_dir>/tasks/`, where the config dir is `RT_CONFIG_DIR`, else `$XDG_CONFIG_HOME/rt`, else `~/.config/rt`. Inside a project, `rt list` shows project and global sections; in JSON every task carries a `source` field of `project` or `global`. On a name collision the project task wins and the shadowed global task is reported as a `ShadowedTask` warning.
 
-Trust caveat: the top level of every task file executes during discovery on every rt invocation (`list`, `help`, `run`), from any directory. Treat write access to `<config_dir>/tasks/` as code-execution access. Never write untrusted content there, and keep top-level code in task files to declarations only.
+Trust caveat: the top level of every task file executes during discovery on every rt invocation (`list`, `help`, `tools`, `run`), from any directory. Treat write access to `<config_dir>/tasks/` as code-execution access. Never write untrusted content there, and keep top-level code in task files to declarations only.
 
 ## Exit codes
 

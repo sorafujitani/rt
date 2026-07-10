@@ -175,16 +175,62 @@ that.
 
 - `rt list` — list tasks with descriptions.
 - `rt help <task>` — show usage for one task.
+- `rt tools --json [task]` — emit vendor-neutral tool definitions.
 - `rt run <task> [args...]` — run a task.
 - `rt run --json <task> [args...]` — run a task and capture its result as JSON.
 
 ### Machine-readable output
 
-`rt list --json`, `rt help <task> --json`, and `rt run --json <task>` print JSON
-on stdout and nothing on stderr. The list/help schema keeps full type
-information for params and options so it can be converted to a JSON Schema or
-an MCP tool definition. Load errors are reported in the JSON rather than on
-stderr.
+`rt list --json`, `rt help <task> --json`, `rt tools --json [task]`, and
+`rt run --json <task>` print JSON on stdout and nothing on stderr when they
+succeed. Load errors are reported in the JSON rather than on stderr.
+
+#### Agent tool catalog
+
+`rt tools --json` converts every discovered task into a vendor-neutral tool
+definition with an object input schema. Pass a task name to return the same
+top-level catalog shape with one tool: `rt tools --json greet`.
+
+```json
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "task": "greet",
+      "description": "Greet someone by name",
+      "source": "project",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Set the task's dry-run flag",
+            "default": false
+          },
+          "name": {
+            "type": "string",
+            "description": "who to greet",
+            "default": "world"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "errors": []
+}
+```
+
+The schema uses task params, options, enums, defaults, descriptions, and the
+universal `dry_run` input. Task names are preserved exactly. To invoke a tool,
+use `rt help <task> --json` to distinguish ordered params from named options,
+then call `rt run --json <task> [args...]`.
+
+The catalog is not an MCP server and does not emit provider-specific OpenAI,
+Anthropic, or MCP definitions. It does not normalize task names or execute an
+input object. Provider adapters own naming constraints, transport, and the
+input-object-to-CLI mapping.
 
 `rt run --json` captures the task's stdout and stderr, completion status, exit
 code, and structured Ruby exception details in one result. Each stream retains
@@ -237,7 +283,7 @@ harness directly under `<config_dir>/`. The config dir has the same shape as a
 project's `.rt/` directory.
 
 A word on trust: the top level of every task file runs during discovery, on
-*every* rt invocation (`list`, `help`, and `run`) from any directory. Because
+*every* rt invocation (`list`, `help`, `tools`, and `run`) from any directory. Because
 global task files load regardless of where you are, write access to
 `<config_dir>/tasks/` is equivalent to code-execution access whenever you run
 rt. Keep that directory as trusted as any startup script.
