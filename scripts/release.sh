@@ -32,6 +32,8 @@ cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 
-git tag "$tag"
+# Existing rt release tags are lightweight. Override the user's signing config
+# so an automated release never opens an editor or waits for a hardware key.
+git -c tag.gpgSign=false tag "$tag"
 git push origin "$tag"
 echo "pushed $tag; the Release workflow will publish the GitHub Release after its gates pass"
