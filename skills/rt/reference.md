@@ -175,7 +175,7 @@ A task file can declare gems at the top level:
 gem "octokit", "~> 8.0"
 
 task "gh:release" do |t|
-  t.run do |ctx|
+  t.run do
     require "octokit"   # requires belong inside the run block
     # ...
   end
@@ -192,7 +192,7 @@ end
 - `t.requires :rails` is task-scoped and appears as `"requirements": ["rails"]` in metadata and tool definitions.
 - Discovery never inspects the project-root `Gemfile` or loads the Rails application. Execution loads the project-root `config/environment.rb` immediately before the task block.
 - A Rails task requires the project-root `Gemfile`, Bundler, and a complete bundle. It never falls back to plain Ruby, uses the application's Bundler runtime instead of `RT_RUBY`, and removes activation state inherited from an outer `bundle exec`.
-- Rails tasks run with the project root as the working directory and receive it as a `Pathname` through `ctx.project_root`.
+- Rails tasks run with the project root as the working directory and can receive it as a `Pathname` through the `project_root:` run keyword.
 - Rails tasks cannot be global or share a file with inline `gem` declarations.
 - Rails boot failures use exit 74 and JSON `error.kind: "environment"`, preserving the exception class, message, and backtrace.
 

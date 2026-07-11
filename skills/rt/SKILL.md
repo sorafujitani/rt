@@ -43,7 +43,7 @@ non-UTF-8 bytes. Each stream captures at most the first 1,048,576 bytes and
 reports whether more output was drained. If a task declares its own `--json`
 option, pass task arguments after the separator: `rt run --json my-task -- --json`.
 
-Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets `ctx.dry_run?` to true inside the task. Use it to preview a task with side effects before running it for real.
+Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets the `dry_run:` run keyword to true. Use it to preview a task with side effects before running it for real.
 
 The exact JSON shapes, the full environment-variable table, and project layout details are in [reference.md](reference.md). Read it when you need a JSON schema or an env var beyond `RT_ROOT`.
 
@@ -58,13 +58,13 @@ gem "octokit", "~> 8.0"
 task "gh:release" do |t|
   t.desc "Create a GitHub release"
   t.param :tag, required: true, description: "tag to release"
-  t.option :draft, type: :boolean, default: false, description: "create as draft"
-  t.option :retries, type: :integer, default: 3, range: 1..10,
+  t.option :draft, :boolean, default: false, description: "create as draft"
+  t.option :retries, Integer, default: 3, in: 1..10,
                      description: "API retry count"
-  t.run do |ctx|
+  t.run do |tag:, draft:, dry_run:, output:|
     require "octokit"   # require INSIDE the run block, never at the top level
-    ctx.say "releasing #{ctx.param(:tag)} (draft: #{ctx.option(:draft)})"
-    return if ctx.dry_run?
+    output.say "releasing #{tag} (draft: #{draft})"
+    return if dry_run
     # real work here
   end
 end
@@ -73,9 +73,9 @@ end
 Rules:
 
 - `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`, so a non-null default must be a string. A required param cannot have a default. `enum` restricts accepted values.
-- `option name, type:, default:, range:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. An integer option may declare an inclusive integer `range`; rt validates both its default and CLI values. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
-- Param and option names must be unique and cannot overlap. `dry_run` and `dry-run` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
-- The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)`. `ctx.project_root` is a `Pathname` for project tasks and `nil` for global tasks. A bare `return` is a valid early exit.
+- `option name, type, default:, in:, description:` is a `--flag`. `type` is `String`, `Integer`, or `:boolean`, and the default must match that type. An integer option may declare an inclusive integer `in`; rt validates both its default and CLI values. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
+- Param and option names must be valid Ruby keyword argument names, must be unique, and cannot overlap. `dry_run`, `output`, and `project_root` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
+- `t.run` receives declared params and options as keyword arguments. It may also request `dry_run:`, `output:`, and `project_root:`. Use `output.say(message)` for output. `project_root` is a `Pathname` for project tasks and `nil` for global tasks. Positional arguments and unknown keywords are declaration errors. Bare `return` and `next` are valid early exits.
 - The task name is exactly what you declare. There is no automatic namespacing from file paths. Declaring the same name twice is an error.
 - Tasks cannot read interactive input from stdin. Pass everything as params and options.
 
@@ -87,8 +87,8 @@ Declare `t.requires :rails` inside a task that uses the Rails application:
 task "users:count" do |t|
   t.desc "Count users"
   t.requires :rails
-  t.run do |ctx|
-    ctx.say User.count
+  t.run do |output:|
+    output.say User.count
   end
 end
 ```

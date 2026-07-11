@@ -166,7 +166,7 @@ pub fn print_help(task: &Task, source_path: Option<&std::path::Path>) {
                 line.push_str(&format!(" (default: {})", o.default));
             }
             if let (Some(minimum), Some(maximum)) = (o.minimum, o.maximum) {
-                line.push_str(&format!(" [range: {minimum}..{maximum}]"));
+                line.push_str(&format!(" [in: {minimum}..{maximum}]"));
             }
             if let Some(desc) = &o.description {
                 line.push_str(&format!(" - {desc}"));

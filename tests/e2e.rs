@@ -501,7 +501,7 @@ fn task_can_receive_its_own_json_option_after_separator() {
 }
 
 #[test]
-fn run_dry_run_sets_ctx_dry_run() {
+fn run_dry_run_sets_keyword() {
     let staged = stage("basic");
     rt().args(["run", "preview", "--dry-run"])
         .current_dir(staged.path())
@@ -767,7 +767,7 @@ fn help_shows_usage_params_and_options() {
         .stdout(predicates::str::contains("rt run deploy"))
         .stdout(predicates::str::contains("environment"))
         .stdout(predicates::str::contains("workers"))
-        .stdout(predicates::str::contains("[range: 1..16]"));
+        .stdout(predicates::str::contains("[in: 1..16]"));
 }
 
 #[test]
@@ -1623,7 +1623,7 @@ fn invalid_declarations_are_structured_load_errors() {
     assert_eq!(tasks[0]["name"], "healthy");
 
     let errors = value["errors"].as_array().unwrap();
-    assert_eq!(errors.len(), 15);
+    assert_eq!(errors.len(), 19);
     assert!(errors
         .iter()
         .all(|error| error["class"] == "InvalidDeclaration"));
@@ -1643,10 +1643,13 @@ fn invalid_declarations_are_structured_load_errors() {
         "default must be one of",
         "required must be true or false",
         "cannot have a default",
-        "range is only supported for integer options",
-        "range must be an inclusive integer range",
+        "`in` is only supported for integer options",
+        "`in` must be an inclusive integer range",
         "default must be within",
         "run block is required",
+        "run block must use keyword arguments",
+        "run block has unknown keyword",
+        "cannot be used as a Ruby keyword argument",
     ] {
         assert!(
             messages.iter().any(|message| message.contains(expected)),
@@ -1697,7 +1700,7 @@ fn global_task_cannot_require_rails() {
     std::fs::create_dir_all(global.path().join("tasks")).unwrap();
     std::fs::write(
         global.path().join("tasks/rails.rb"),
-        "task(\"global_rails\") { |t| t.requires :rails; t.run { |_ctx| } }\n",
+        "task(\"global_rails\") { |t| t.requires :rails; t.run { } }\n",
     )
     .unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -2094,8 +2097,8 @@ task "rails:runtime" do |t|
     t.param :name, required: true
   end
   t.requires :rails
-  t.run do |ctx|
-    ctx.say ctx.param(:name)
+  t.run do |name:, output:|
+    output.say name
   end
 end
 "#,

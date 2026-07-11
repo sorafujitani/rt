@@ -10,9 +10,9 @@ mkdir -p "$root/project/.rt/tasks" "$root/config"
 cat >"$root/project/.rt/tasks/greet.rb" <<'RUBY'
 task "greet" do |t|
   t.desc "Greet someone by name"
-  t.option :name, type: :string, default: "world", description: "who to greet"
-  t.run do |ctx|
-    ctx.say "Hello, #{ctx.option(:name)}!"
+  t.option :name, String, default: "world", description: "who to greet"
+  t.run do |name:, output:|
+    output.say "Hello, #{name}!"
   end
 end
 RUBY
