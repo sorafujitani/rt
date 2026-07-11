@@ -1,7 +1,9 @@
 gem "rake"
 
-desc "Use a gem declared inside the task file"
-task "with_rake" do |ctx|
-  require "rake"
-  ctx.say "rake #{Rake::VERSION}"
+task "with_rake" do |t|
+  t.desc "Use a gem declared inside the task file"
+  t.run do |output:|
+    require "rake"
+    output.say "rake #{Rake::VERSION}"
+  end
 end

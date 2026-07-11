@@ -60,6 +60,21 @@ pub fn parse(task: &Task, raw: &[String]) -> Result<ParsedArgs, RtError> {
                     Value::String(v)
                 }
             };
+            if let Some(number) = value.as_i64() {
+                if opt.minimum.is_some_and(|minimum| number < minimum)
+                    || opt.maximum.is_some_and(|maximum| number > maximum)
+                {
+                    let range = match (opt.minimum, opt.maximum) {
+                        (Some(minimum), Some(maximum)) => format!("{minimum}..{maximum}"),
+                        (Some(minimum), None) => format!(">= {minimum}"),
+                        (None, Some(maximum)) => format!("<= {maximum}"),
+                        (None, None) => unreachable!(),
+                    };
+                    return Err(fail(format!(
+                        "option --{name} must be within {range}, got {number}"
+                    )));
+                }
+            }
             options.insert(name.to_string(), value);
             i += 1;
             continue;
@@ -170,18 +185,24 @@ mod tests {
                     name: "workers".to_string(),
                     option_type: OptionType::Integer,
                     default: json!(2),
+                    minimum: None,
+                    maximum: None,
                     description: None,
                 },
                 TaskOption {
                     name: "force".to_string(),
                     option_type: OptionType::Boolean,
                     default: json!(false),
+                    minimum: None,
+                    maximum: None,
                     description: None,
                 },
                 TaskOption {
                     name: "tag".to_string(),
                     option_type: OptionType::String,
                     default: Value::Null,
+                    minimum: None,
+                    maximum: None,
                     description: None,
                 },
             ],
@@ -264,6 +285,20 @@ mod tests {
         let e = parse_err(&["staging", "--workers", "lots"]);
         assert_eq!(e.exit_code(), 2);
         assert!(e.to_string().contains("integer"));
+    }
+
+    #[test]
+    fn integer_outside_declared_range_is_usage_error() {
+        let mut task = task();
+        task.options[0].minimum = Some(1);
+        task.options[0].maximum = Some(4);
+        let args = vec![
+            "staging".to_string(),
+            "--workers".to_string(),
+            "5".to_string(),
+        ];
+        let error = parse(&task, &args).unwrap_err();
+        assert!(error.to_string().contains("must be within 1..4"));
     }
 
     #[test]

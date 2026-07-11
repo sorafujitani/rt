@@ -6,8 +6,8 @@
 #   --emit-metadata <root>  load tasks/**/*.rb and print metadata JSON
 #   --run <root> <task>     read args JSON from stdin and execute one task
 #
-# The DSL (task/desc/param/option/requires) is extended onto the top-level object so
-# task files read naturally, while shared state lives on the RT module.
+# The file-level DSL (`task` and `gem`) is extended onto the top-level object.
+# Task-specific declarations live on the builder yielded by `task`.
 
 require "json"
 require "stringio"
@@ -15,12 +15,18 @@ require "fileutils"
 require "pathname"
 require "rbconfig"
 
-HARNESS_PROTOCOL_VERSION = 3
+HARNESS_PROTOCOL_VERSION = 4
 CONTROL_FD_ENV = "RT_CONTROL_FD"
 
 module RT
   OPTION_TYPES = %w[string integer boolean].freeze
-  RESERVED_ARGUMENT_NAMES = %w[dry-run dry_run].freeze
+  RESERVED_ARGUMENT_NAMES = %w[dry-run dry_run output project_root].freeze
+  RUBY_KEYWORDS = %w[
+    BEGIN END alias and begin break case class def defined? do else elsif end
+    ensure false for if in module next nil not or redo rescue retry return self
+    super then true undef unless until when while yield __FILE__ __LINE__ __ENCODING__
+  ].freeze
+  ARGUMENT_NAME = /\A[a-z_][a-zA-Z0-9_]*\z/
 
   class Task
     attr_reader :name, :description, :params, :options, :requirements, :file, :block
@@ -63,6 +69,11 @@ module RT
       end
       ((param_names + option_names) & RESERVED_ARGUMENT_NAMES).each do |name|
         errors << "name #{name.inspect} is reserved by rt"
+      end
+      (param_names + option_names).uniq.each do |name|
+        unless ARGUMENT_NAME.match?(name) && !RUBY_KEYWORDS.include?(name)
+          errors << "name #{name.inspect} cannot be used as a Ruby keyword argument"
+        end
       end
       duplicate_names(@requirements).each do |name|
         errors << "duplicate requirement #{name.inspect}"
@@ -125,12 +136,15 @@ module RT
   end
 
   class Option
-    attr_reader :name, :type, :default
+    attr_reader :name, :type, :default, :minimum, :maximum
 
-    def initialize(name, type:, default:, description:)
+    def initialize(name, type:, default:, range:, description:)
       @name = name
       @type = type
       @default = default
+      @range = range
+      @minimum = range.begin if range.is_a?(Range)
+      @maximum = range.end if range.is_a?(Range)
       @description = description
     end
 
@@ -138,7 +152,17 @@ module RT
       unless OPTION_TYPES.include?(@type)
         return ["option #{@name.inspect} has unknown option type #{@type.inspect}"]
       end
-      return [] if @default.nil?
+      errors = []
+      if @range
+        unless @type == "integer"
+          errors << "option #{@name.inspect} `in` is only supported for integer options"
+        end
+        unless @range.is_a?(Range) && !@range.exclude_end? &&
+               @minimum.is_a?(Integer) && @maximum.is_a?(Integer) && @minimum <= @maximum
+          errors << "option #{@name.inspect} `in` must be an inclusive integer range"
+        end
+      end
+      return errors if @default.nil?
 
       valid = case @type
               when "string" then @default.is_a?(String)
@@ -146,7 +170,14 @@ module RT
               when "boolean" then @default == true || @default == false
               end
       expected = @type == "integer" ? "an integer" : "a #{@type}"
-      valid ? [] : ["option #{@name.inspect} default must be #{expected}"]
+      errors << "option #{@name.inspect} default must be #{expected}" unless valid
+      valid_range = @type == "integer" && @range.is_a?(Range) &&
+                    !@range.exclude_end? && @minimum.is_a?(Integer) &&
+                    @maximum.is_a?(Integer) && @minimum <= @maximum
+      if valid && valid_range && !@range.cover?(@default)
+        errors << "option #{@name.inspect} default must be within #{@minimum}..#{@maximum}"
+      end
+      errors
     end
 
     def to_meta
@@ -154,8 +185,80 @@ module RT
         "name" => @name,
         "type" => @type,
         "default" => @default,
+        "minimum" => @minimum,
+        "maximum" => @maximum,
         "description" => @description
       }
+    end
+  end
+
+  class TaskBuilder
+    attr_reader :description, :params, :options, :requirements, :block
+
+    def initialize
+      @description = nil
+      @params = []
+      @options = []
+      @requirements = []
+      @block = nil
+    end
+
+    def desc(text)
+      @description = text
+    end
+
+    def param(name, required: false, default: nil, enum: nil, description: nil)
+      @params << Param.new(
+        name.to_s,
+        required: required,
+        default: default,
+        enum: enum ? enum.map(&:to_s) : nil,
+        description: description
+      )
+    end
+
+    def option(name, type = :string, default: nil, in: nil, description: nil)
+      @options << Option.new(
+        name.to_s,
+        type: normalize_option_type(type),
+        default: default,
+        range: binding.local_variable_get(:in),
+        description: description
+      )
+    end
+
+    def requires(*requirements)
+      @requirements.concat(requirements.map(&:to_s))
+    end
+
+    def run(&block)
+      @block = block
+    end
+
+    def declaration_errors
+      return ["run block is required"] unless @block
+
+      parameters = @block.parameters
+      positional = parameters.select { |kind, _name| %i[req opt rest].include?(kind) }
+      return ["run block must use keyword arguments"] unless positional.empty?
+
+      available = (@params.map(&:name) + @options.map(&:name) +
+                   %w[dry_run output project_root]).uniq
+      parameters.filter_map do |kind, name|
+        next unless %i[key keyreq].include?(kind)
+        next if available.include?(name.to_s)
+
+        "run block has unknown keyword #{name.to_s.inspect}"
+      end
+    end
+
+    private
+
+    def normalize_option_type(type)
+      return "string" if type == String
+      return "integer" if type == Integer
+
+      type.to_s
     end
   end
 
@@ -217,43 +320,13 @@ module RT
     end
   end
 
-  class Context
-    attr_reader :params, :options, :project_root
-
-    def initialize(params:, options:, dry_run:, project_root:)
-      @params = params
-      @options = options
-      @dry_run = dry_run
-      @project_root = project_root.nil? ? nil : Pathname.new(project_root)
-    end
-
-    def dry_run?
-      @dry_run
-    end
-
-    def dry_run
-      @dry_run
-    end
-
-    def param(name)
-      @params[name.to_s]
-    end
-
-    def option(name)
-      @options[name.to_s]
-    end
-
+  class Output
     def say(message)
       puts message
     end
   end
 
-  # DSL declarations accumulate in a pending buffer consumed by the next task.
   module DSL
-    def desc(text)
-      RT.pending[:description] = text
-    end
-
     # Declared at the top level of a task file; scoped to that file. On the
     # top-level object this shadows Kernel#gem, but task blocks run on a fresh
     # object where Kernel#gem is visible again, so declarations are structurally
@@ -265,41 +338,28 @@ module RT
       }
     end
 
-    def param(name, required: false, default: nil, enum: nil, description: nil)
-      RT.pending[:params] << Param.new(
-        name.to_s,
-        required: required,
-        default: default,
-        enum: enum ? enum.map(&:to_s) : nil,
-        description: description
-      )
-    end
-
-    def option(name, type: :string, default: nil, description: nil)
-      t = type.to_s
-      RT.pending[:options] << Option.new(
-        name.to_s,
-        type: t,
-        default: default,
-        description: description
-      )
-    end
-
-    def requires(*requirements)
-      RT.pending[:requirements].concat(requirements.map(&:to_s))
-    end
-
-    def task(name, &block)
-      pending = RT.consume_pending
-      RT.registry.add(Task.new(
+    def task(name)
+      builder = TaskBuilder.new
+      yield builder
+      task = Task.new(
         name: name.to_s,
-        description: pending[:description],
-        params: pending[:params],
-        options: pending[:options],
-        requirements: pending[:requirements],
+        description: builder.description,
+        params: builder.params,
+        options: builder.options,
+        requirements: builder.requirements,
         file: RT.current_file,
-        block: block
-      ))
+        block: builder.block
+      )
+      errors = builder.declaration_errors
+      if errors.empty?
+        RT.registry.add(task)
+      else
+        RT.registry.record_error(
+          file: RT.current_file,
+          klass: "InvalidDeclaration",
+          message: "task #{name.to_s.inspect}: #{errors.join('; ')}"
+        )
+      end
     end
   end
 
@@ -310,10 +370,6 @@ module RT
       @registry ||= Registry.new
     end
 
-    def pending
-      @pending ||= fresh_pending
-    end
-
     def file_gems
       @file_gems ||= Hash.new { |h, k| h[k] = [] }
     end
@@ -322,15 +378,6 @@ module RT
       file_gems.fetch(file, [])
     end
 
-    def consume_pending
-      current = pending
-      @pending = fresh_pending
-      current
-    end
-
-    def fresh_pending
-      { description: nil, params: [], options: [], requirements: [] }
-    end
   end
 end
 
@@ -350,7 +397,6 @@ def load_tasks(root)
   Dir.glob(pattern).sort.each do |file|
     rel = relative_path(root, file)
     RT.current_file = rel
-    RT.consume_pending # drop any dangling desc/param from a prior file
     begin
       load file
     rescue SystemExit => e
@@ -558,18 +604,22 @@ def run_task(root, name, project_root)
     load_rails_environment(project_root, control, root)
   end
 
-  ctx = RT::Context.new(
-    params: params,
-    options: options,
-    dry_run: dry_run,
-    project_root: project_root
-  )
   begin
     # Turn the block into a method so a bare `return` inside a task is a valid
     # early exit rather than a LocalJumpError.
     runner = Object.new
     runner.define_singleton_method(:__rt_task__, &task.block)
-    runner.__rt_task__(ctx)
+    available = params.merge(options).transform_keys(&:to_sym)
+    available[:dry_run] = dry_run
+    available[:output] = RT::Output.new
+    available[:project_root] = project_root.nil? ? nil : Pathname.new(project_root)
+    parameters = task.block.parameters
+    accepts_all = parameters.any? { |kind, _name| kind == :keyrest }
+    accepted = parameters.filter_map do |kind, name|
+      name if %i[key keyreq].include?(kind)
+    end
+    arguments = accepts_all ? available : available.slice(*accepted)
+    runner.__rt_task__(**arguments)
   rescue ScriptError, StandardError => e
     write_failure(control, "task_exception", e, root)
     exit 1

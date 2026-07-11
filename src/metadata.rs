@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Version of the public `list/help --json` metadata schema.
-pub const METADATA_SCHEMA_VERSION: u32 = 3;
+pub const METADATA_SCHEMA_VERSION: u32 = 4;
 
 /// Version of the private Rust/Ruby harness wire contract.
-pub const HARNESS_PROTOCOL_VERSION: u32 = 3;
+pub const HARNESS_PROTOCOL_VERSION: u32 = 4;
 
 /// Contract between the Rust CLI and the Ruby harness. Parsed strictly at the
 /// process boundary; the rest of the code trusts these types.
@@ -106,6 +106,10 @@ pub struct TaskOption {
     pub option_type: OptionType,
     #[serde(default)]
     pub default: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maximum: Option<i64>,
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -139,7 +143,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_value(metadata).unwrap(),
-            json!({ "protocol_version": 3, "tasks": [], "errors": [] })
+            json!({ "protocol_version": 4, "tasks": [], "errors": [] })
         );
     }
 }

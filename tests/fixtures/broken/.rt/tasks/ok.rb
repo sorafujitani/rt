@@ -1,4 +1,6 @@
-desc "A healthy task alongside a broken one"
-task "healthy" do |ctx|
-  ctx.say "ok"
+task "healthy" do |t|
+  t.desc "A healthy task alongside a broken one"
+  t.run do |output:|
+    output.say "ok"
+  end
 end

@@ -1,24 +1,33 @@
-desc "Greet someone by name"
-option :name, type: :string, default: "world", description: "who to greet"
-task "greet" do |ctx|
-  ctx.say "Hello, #{ctx.option(:name)}!"
-end
-
-desc "Preview whether this is a dry run"
-task "preview" do |ctx|
-  if ctx.dry_run?
-    ctx.say "would perform side effects (dry run)"
-  else
-    ctx.say "performing side effects"
+task "greet" do |t|
+  t.desc "Greet someone by name"
+  t.option :name, String, default: "world", description: "who to greet"
+  t.run do |name:, output:|
+    output.say "Hello, #{name}!"
   end
 end
 
-desc "Raise an exception"
-task "boom" do |_ctx|
-  raise "kaboom"
+task "preview" do |t|
+  t.desc "Preview whether this is a dry run"
+  t.run do |dry_run:, output:|
+    if dry_run
+      output.say "would perform side effects (dry run)"
+      next
+    end
+
+    output.say "performing side effects"
+  end
 end
 
-desc "Exit with a custom status code"
-task "bail" do |_ctx|
-  exit 3
+task "boom" do |t|
+  t.desc "Raise an exception"
+  t.run do
+    raise "kaboom"
+  end
+end
+
+task "bail" do |t|
+  t.desc "Exit with a custom status code"
+  t.run do
+    exit 3
+  end
 end

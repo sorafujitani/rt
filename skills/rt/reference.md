@@ -6,7 +6,7 @@
 
 ```json
 {
-  "protocol_version": 3,
+  "protocol_version": 4,
   "tasks": [
     {
       "name": "deploy",
@@ -18,7 +18,8 @@
           "enum": ["staging", "production"], "description": null }
       ],
       "options": [
-        { "name": "workers", "type": "integer", "default": 2, "description": null },
+        { "name": "workers", "type": "integer", "default": 2,
+          "minimum": 1, "maximum": 16, "description": null },
         { "name": "force", "type": "boolean", "default": false, "description": null }
       ],
       "gems": [
@@ -33,7 +34,7 @@
 }
 ```
 
-`rt help <task> --json` returns `{ "protocol_version": 3, "task": { ...same task shape... } }`.
+`rt help <task> --json` returns `{ "protocol_version": 4, "task": { ...same task shape... } }`.
 
 Option `type` is one of `string`, `integer`, `boolean`. Param values arrive in the task as strings regardless of the default's type.
 `protocol_version` versions this public metadata schema; it is independent of
@@ -43,7 +44,7 @@ rt's private Ruby harness protocol and on-disk cache format.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "tools": [
     {
       "task": "deploy",
@@ -71,7 +72,9 @@ rt's private Ruby harness protocol and on-disk cache format.
           "workers": {
             "type": "integer",
             "description": "worker count",
-            "default": 2
+            "default": 2,
+            "minimum": 1,
+            "maximum": 16
           }
         },
         "required": ["environment"],
@@ -88,7 +91,8 @@ results. `task`, `source`, and `requirements` preserve the merged metadata value
 combine params, options, and `dry_run` into one object namespace. Params are
 strings; option types remain `string`, `integer`, or `boolean`. Required params
 appear in `required`. Null defaults are omitted, while a boolean with no
-declared default has the effective default `false`. Every input schema sets
+declared default has the effective default `false`. Integer ranges become
+JSON Schema `minimum` and `maximum`. Every input schema sets
 `additionalProperties` to `false`.
 
 Without `[task]`, `tools` contains every merged project/global task. With a
@@ -170,9 +174,11 @@ A task file can declare gems at the top level:
 ```ruby
 gem "octokit", "~> 8.0"
 
-task "gh:release" do |ctx|
-  require "octokit"   # requires belong inside the task block
-  # ...
+task "gh:release" do |t|
+  t.run do
+    require "octokit"   # requires belong inside the run block
+    # ...
+  end
 end
 ```
 
@@ -183,10 +189,10 @@ end
 
 ## Rails applications
 
-- `requires :rails` is task-scoped and appears as `"requirements": ["rails"]` in metadata and tool definitions.
+- `t.requires :rails` is task-scoped and appears as `"requirements": ["rails"]` in metadata and tool definitions.
 - Discovery never inspects the project-root `Gemfile` or loads the Rails application. Execution loads the project-root `config/environment.rb` immediately before the task block.
 - A Rails task requires the project-root `Gemfile`, Bundler, and a complete bundle. It never falls back to plain Ruby, uses the application's Bundler runtime instead of `RT_RUBY`, and removes activation state inherited from an outer `bundle exec`.
-- Rails tasks run with the project root as the working directory and receive it as a `Pathname` through `ctx.project_root`.
+- Rails tasks run with the project root as the working directory and can receive it as a `Pathname` through the `project_root:` run keyword.
 - Rails tasks cannot be global or share a file with inline `gem` declarations.
 - Rails boot failures use exit 74 and JSON `error.kind: "environment"`, preserving the exception class, message, and backtrace.
 

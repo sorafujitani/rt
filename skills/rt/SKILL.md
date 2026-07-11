@@ -43,49 +43,53 @@ non-UTF-8 bytes. Each stream captures at most the first 1,048,576 bytes and
 reports whether more output was drained. If a task declares its own `--json`
 option, pass task arguments after the separator: `rt run --json my-task -- --json`.
 
-Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets `ctx.dry_run?` to true inside the task. Use it to preview a task with side effects before running it for real.
+Human-readable variants are `rt list` and `rt help <task>`. Every task accepts `--dry-run`, which sets the `dry_run:` run keyword to true. Use it to preview a task with side effects before running it for real.
 
 The exact JSON shapes, the full environment-variable table, and project layout details are in [reference.md](reference.md). Read it when you need a JSON schema or an env var beyond `RT_ROOT`.
 
 ## Author tasks
 
-Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). The DSL uses a pending-buffer model. `desc`, `param`, `option`, and `requires` describe the next `task` declaration. Copy this template:
+Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). Each `task` yields a builder that owns its description, inputs, requirements, and run block. Copy this template:
 
 ```ruby
 # .rt/tasks/gh-release.rb
 gem "octokit", "~> 8.0"
 
-desc "Create a GitHub release"
-param :tag, required: true, description: "tag to release"
-option :draft, type: :boolean, default: false, description: "create as draft"
-option :retries, type: :integer, default: 3, description: "API retry count"
-task "gh:release" do |ctx|
-  require "octokit"   # require INSIDE the block, never at the top level
-  ctx.say "releasing #{ctx.param(:tag)} (draft: #{ctx.option(:draft)})"
-  return if ctx.dry_run?
-  # real work here
+task "gh:release" do |t|
+  t.desc "Create a GitHub release"
+  t.param :tag, required: true, description: "tag to release"
+  t.option :draft, :boolean, default: false, description: "create as draft"
+  t.option :retries, Integer, default: 3, in: 1..10,
+                     description: "API retry count"
+  t.run do |tag:, draft:, dry_run:, output:|
+    require "octokit"   # require INSIDE the run block, never at the top level
+    output.say "releasing #{tag} (draft: #{draft})"
+    return if dry_run
+    # real work here
+  end
 end
 ```
 
 Rules:
 
 - `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`, so a non-null default must be a string. A required param cannot have a default. `enum` restricts accepted values.
-- `option name, type:, default:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
-- Param and option names must be unique and cannot overlap. `dry_run` and `dry-run` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
-- The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)`. `ctx.project_root` is a `Pathname` for project tasks and `nil` for global tasks. A bare `return` is a valid early exit.
+- `option name, type, default:, in:, description:` is a `--flag`. `type` is `String`, `Integer`, or `:boolean`, and the default must match that type. An integer option may declare an inclusive integer `in`; rt validates both its default and CLI values. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
+- Param and option names must be valid Ruby keyword argument names, must be unique, and cannot overlap. `dry_run`, `output`, and `project_root` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
+- `t.run` receives declared params and options as keyword arguments. It may also request `dry_run:`, `output:`, and `project_root:`. Use `output.say(message)` for output. `project_root` is a `Pathname` for project tasks and `nil` for global tasks. Positional arguments and unknown keywords are declaration errors. Bare `return` and `next` are valid early exits.
 - The task name is exactly what you declare. There is no automatic namespacing from file paths. Declaring the same name twice is an error.
 - Tasks cannot read interactive input from stdin. Pass everything as params and options.
 
 ## Rails applications
 
-Declare `requires :rails` immediately before a task that uses the Rails
-application:
+Declare `t.requires :rails` inside a task that uses the Rails application:
 
 ```ruby
-desc "Count users"
-requires :rails
-task "users:count" do |ctx|
-  ctx.say User.count
+task "users:count" do |t|
+  t.desc "Count users"
+  t.requires :rails
+  t.run do |output:|
+    output.say User.count
+  end
 end
 ```
 

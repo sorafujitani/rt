@@ -1,77 +1,101 @@
-desc "Write a partial (newline-less) stderr line, then raise"
-task "boom_partial" do |_ctx|
-  $stderr.write("partial-no-newline")
-  raise "boom-partial"
+task "boom_partial" do |t|
+  t.desc "Write a partial (newline-less) stderr line, then raise"
+  t.run do
+    $stderr.write("partial-no-newline")
+    raise "boom-partial"
+  end
 end
 
-desc "Write non-UTF-8 bytes to stderr, then raise"
-task "boom_binary" do |_ctx|
-  $stderr.binmode
-  $stderr.write("\xff\xfe".dup.force_encoding("BINARY"))
-  raise "boom-binary"
+task "boom_binary" do |t|
+  t.desc "Write non-UTF-8 bytes to stderr, then raise"
+  t.run do
+    $stderr.binmode
+    $stderr.write("\xff\xfe".dup.force_encoding("BINARY"))
+    raise "boom-binary"
+  end
 end
 
-desc "Raise a ScriptError-family exception"
-task "boom_scripterror" do |_ctx|
-  raise NotImplementedError, "not yet"
+task "boom_scripterror" do |t|
+  t.desc "Raise a ScriptError-family exception"
+  t.run do
+    raise NotImplementedError, "not yet"
+  end
 end
 
-desc "Return early on dry run"
-task "early_return" do |ctx|
-  ctx.say "starting"
-  return if ctx.dry_run?
+task "early_return" do |t|
+  t.desc "Return early on dry run"
+  t.run do |dry_run:, output:|
+    output.say "starting"
+    return if dry_run
 
-  ctx.say "did the work"
+    output.say "did the work"
+  end
 end
 
-desc "Print a sentinel-shaped line to stderr but exit successfully"
-task "fake_sentinel" do |_ctx|
-  $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\"}")
+task "fake_sentinel" do |t|
+  t.desc "Print a sentinel-shaped line to stderr but exit successfully"
+  t.run do
+    $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\"}")
+  end
 end
 
-desc "Print a valid sentinel-shaped payload to stderr, then exit nonzero"
-task "fake_sentinel_failure" do |_ctx|
-  $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\",\"backtrace\":[]}")
-  exit 3
+task "fake_sentinel_failure" do |t|
+  t.desc "Print a valid sentinel-shaped payload to stderr, then exit nonzero"
+  t.run do
+    $stderr.puts("\x1e__RT_ERROR__ {\"class\":\"NotReal\",\"message\":\"decoy\",\"backtrace\":[]}")
+    exit 3
+  end
 end
 
-desc "Write to both output streams"
-task "both_streams" do |_ctx|
-  $stdout.write("out")
-  $stderr.write("err")
+task "both_streams" do |t|
+  t.desc "Write to both output streams"
+  t.run do
+    $stdout.write("out")
+    $stderr.write("err")
+  end
 end
 
-desc "Write non-UTF-8 bytes to stdout"
-task "binary_stdout" do |_ctx|
-  $stdout.binmode
-  $stdout.write("\xff\xfe".dup.force_encoding("BINARY"))
+task "binary_stdout" do |t|
+  t.desc "Write non-UTF-8 bytes to stdout"
+  t.run do
+    $stdout.binmode
+    $stdout.write("\xff\xfe".dup.force_encoding("BINARY"))
+  end
 end
 
-desc "Write enough data to fill both process pipes"
-task "large_streams" do |_ctx|
-  threads = [
-    Thread.new { $stdout.write("o" * 131_072) },
-    Thread.new { $stderr.write("e" * 131_072) }
-  ]
-  threads.each(&:join)
+task "large_streams" do |t|
+  t.desc "Write enough data to fill both process pipes"
+  t.run do
+    threads = [
+      Thread.new { $stdout.write("o" * 131_072) },
+      Thread.new { $stderr.write("e" * 131_072) }
+    ]
+    threads.each(&:join)
+  end
 end
 
-desc "Write exactly the JSON capture limit"
-task "capture_boundary" do |_ctx|
-  $stdout.write("b" * 1_048_576)
+task "capture_boundary" do |t|
+  t.desc "Write exactly the JSON capture limit"
+  t.run do
+    $stdout.write("b" * 1_048_576)
+  end
 end
 
-desc "Write one byte beyond the JSON capture limit to both streams"
-task "capture_overflow" do |_ctx|
-  threads = [
-    Thread.new { $stdout.write("o" * 1_048_577) },
-    Thread.new { $stderr.write("e" * 1_048_577) }
-  ]
-  threads.each(&:join)
+task "capture_overflow" do |t|
+  t.desc "Write one byte beyond the JSON capture limit to both streams"
+  t.run do
+    threads = [
+      Thread.new { $stdout.write("o" * 1_048_577) },
+      Thread.new { $stderr.write("e" * 1_048_577) }
+    ]
+    threads.each(&:join)
+  end
 end
 
-desc "Use a task-owned --json option"
-option :json, type: :boolean, default: false
-task "owns_json" do |ctx|
-  ctx.say ctx.option(:json).to_s
+task "owns_json" do |t|
+  t.desc "Use a task-owned --json option"
+  t.option :json, :boolean, default: false
+  t.run do |json:, output:|
+    output.say json.to_s
+  end
 end

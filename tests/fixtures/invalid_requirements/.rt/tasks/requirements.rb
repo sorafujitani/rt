@@ -1,7 +1,9 @@
-requires :unknown
-task "unknown_requirement" do |_ctx|
+task "unknown_requirement" do |t|
+  t.requires :unknown
+  t.run { }
 end
 
-requires :rails, :rails
-task "duplicate_requirement" do |_ctx|
+task "duplicate_requirement" do |t|
+  t.requires :rails, :rails
+  t.run { }
 end

@@ -1,51 +1,101 @@
-param :name
-param :name
-task "duplicate_param" do |_ctx|
+task "duplicate_param" do |t|
+  t.param :name
+  t.param :name
+  t.run { }
 end
 
-option :force, type: :boolean
-option :force, type: :boolean
-task "duplicate_option" do |_ctx|
+task "duplicate_option" do |t|
+  t.option :force, :boolean
+  t.option :force, :boolean
+  t.run { }
 end
 
-param :target
-option :target
-task "param_option_collision" do |_ctx|
+task "param_option_collision" do |t|
+  t.param :target
+  t.option :target
+  t.run { }
 end
 
-option :dry_run, type: :boolean
-task "reserved_name" do |_ctx|
+task "reserved_name" do |t|
+  t.option :dry_run, :boolean
+  t.run { }
 end
 
-option :count, type: :float
-task "unknown_option_type" do |_ctx|
+task "reserved_output_name" do |t|
+  t.option :output, String
+  t.run { }
 end
 
-option :count, type: :integer, default: "three"
-task "invalid_option_default" do |_ctx|
+task "invalid_keyword_name" do |t|
+  t.option :"bad-name", String
+  t.run { }
 end
 
-option :force, type: :boolean, default: "yes"
-task "invalid_boolean_default" do |_ctx|
+task "unknown_option_type" do |t|
+  t.option :count, :float
+  t.run { }
 end
 
-param :count, default: 3
-task "invalid_param_default" do |_ctx|
+task "invalid_option_default" do |t|
+  t.option :count, Integer, default: "three"
+  t.run { }
 end
 
-param :environment, enum: %w[staging production], default: "development"
-task "invalid_enum_default" do |_ctx|
+task "invalid_boolean_default" do |t|
+  t.option :force, :boolean, default: "yes"
+  t.run { }
 end
 
-param :environment, required: "yes"
-task "invalid_required_type" do |_ctx|
+task "invalid_param_default" do |t|
+  t.param :count, default: 3
+  t.run { }
 end
 
-param :environment, required: true, default: "production"
-task "required_param_with_default" do |_ctx|
+task "invalid_enum_default" do |t|
+  t.param :environment, enum: %w[staging production], default: "development"
+  t.run { }
 end
 
-desc "A valid task alongside invalid declarations"
-task "healthy" do |ctx|
-  ctx.say "ok"
+task "invalid_required_type" do |t|
+  t.param :environment, required: "yes"
+  t.run { }
+end
+
+task "required_param_with_default" do |t|
+  t.param :environment, required: true, default: "production"
+  t.run { }
+end
+
+task "invalid_range_type" do |t|
+  t.option :name, String, in: 1..3
+  t.run { }
+end
+
+task "invalid_range_bounds" do |t|
+  t.option :count, Integer, in: 3...5
+  t.run { }
+end
+
+task "default_outside_range" do |t|
+  t.option :count, Integer, default: 5, in: 1..3
+  t.run { }
+end
+
+task "missing_run" do |t|
+  t.desc "Has no run block"
+end
+
+task "positional_run_argument" do |t|
+  t.run { |_value| }
+end
+
+task "unknown_run_keyword" do |t|
+  t.run { |missing:| }
+end
+
+task "healthy" do |t|
+  t.desc "A valid task alongside invalid declarations"
+  t.run do |output:|
+    output.say "ok"
+  end
 end
