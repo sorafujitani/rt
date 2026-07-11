@@ -3,7 +3,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub(crate) const TOOL_CATALOG_SCHEMA_VERSION: u32 = 2;
+pub(crate) const TOOL_CATALOG_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ToolCatalog {
@@ -41,6 +41,10 @@ struct InputProperty {
     enum_values: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     default: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    minimum: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -79,6 +83,8 @@ impl ToolDefinition {
                     description: param.description.clone(),
                     enum_values: param.enum_values.clone(),
                     default: non_null_default(&param.default),
+                    minimum: None,
+                    maximum: None,
                 },
             );
             if param.required {
@@ -98,6 +104,8 @@ impl ToolDefinition {
                     description: option.description.clone(),
                     enum_values: None,
                     default,
+                    minimum: option.minimum,
+                    maximum: option.maximum,
                 },
             );
         }
@@ -109,6 +117,8 @@ impl ToolDefinition {
                 description: Some("Set the task's dry-run flag".to_string()),
                 enum_values: None,
                 default: Some(Value::Bool(false)),
+                minimum: None,
+                maximum: None,
             },
         );
 
@@ -176,18 +186,24 @@ mod tests {
                         name: "workers".to_string(),
                         option_type: OptionType::Integer,
                         default: json!(2),
+                        minimum: Some(1),
+                        maximum: Some(16),
                         description: Some("Worker count".to_string()),
                     },
                     TaskOption {
                         name: "force".to_string(),
                         option_type: OptionType::Boolean,
                         default: Value::Null,
+                        minimum: None,
+                        maximum: None,
                         description: None,
                     },
                     TaskOption {
                         name: "label".to_string(),
                         option_type: OptionType::String,
                         default: Value::Null,
+                        minimum: None,
+                        maximum: None,
                         description: None,
                     },
                 ],
@@ -206,7 +222,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ToolCatalog::from_metadata(&metadata)).unwrap(),
             json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "tools": [{
                     "task": "deploy:prod/v1",
                     "description": "Deploy the application",
@@ -224,7 +240,9 @@ mod tests {
                             "workers": {
                                 "type": "integer",
                                 "description": "Worker count",
-                                "default": 2
+                                "default": 2,
+                                "minimum": 1,
+                                "maximum": 16
                             },
                             "force": { "type": "boolean", "default": false },
                             "label": { "type": "string" },

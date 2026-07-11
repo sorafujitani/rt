@@ -47,10 +47,12 @@ Create a `.rt/tasks/` directory in your project and add a task file:
 
 ```ruby
 # .rt/tasks/greet.rb
-desc "Greet someone by name"
-option :name, type: :string, default: "world", description: "who to greet"
-task "greet" do |ctx|
-  ctx.say "Hello, #{ctx.option(:name)}!"
+task "greet" do |t|
+  t.desc "Greet someone by name"
+  t.option :name, type: :string, default: "world", description: "who to greet"
+  t.run do |ctx|
+    ctx.say "Hello, #{ctx.option(:name)}!"
+  end
 end
 ```
 
@@ -79,19 +81,22 @@ discovery.
 
 ## Writing tasks
 
-Task files are loaded from `.rt/tasks/**/*.rb`. The DSL uses a pending-buffer
-model: `desc`, `param`, `option`, and `requires` describe the next `task`.
+Task files are loaded from `.rt/tasks/**/*.rb`. Each `task` yields a builder;
+its description, inputs, requirements, and run block are declared together.
 
 ```ruby
-desc "Deploy the application to an environment"
-param :environment, required: true, enum: %w[staging production],
-                    description: "target environment"
-option :workers, type: :integer, default: 2, description: "worker count"
-option :force, type: :boolean, default: false, description: "skip safety checks"
-task "deploy" do |ctx|
-  ctx.say "deploying to #{ctx.param(:environment)} with #{ctx.option(:workers)} workers"
-  return if ctx.dry_run?
-  # ... real work ...
+task "deploy" do |t|
+  t.desc "Deploy the application to an environment"
+  t.param :environment, required: true, enum: %w[staging production],
+                        description: "target environment"
+  t.option :workers, type: :integer, default: 2, range: 1..16,
+                     description: "worker count"
+  t.option :force, type: :boolean, default: false, description: "skip safety checks"
+  t.run do |ctx|
+    ctx.say "deploying to #{ctx.param(:environment)} with #{ctx.option(:workers)} workers"
+    return if ctx.dry_run?
+    # ... real work ...
+  end
 end
 ```
 
@@ -99,15 +104,17 @@ end
   argument. `enum` restricts the accepted values. A value supplied on the
   command line always reaches the task as a `String`, so a non-null `default`
   must also be a string. A required param cannot have a default.
-- `option name, type:, default:, description:` — a `--flag`. `type` is one of
+- `option name, type:, default:, range:, description:` — a `--flag`. `type` is one of
   `:string`, `:integer`, `:boolean`. Boolean options are set by presence
   (`--force`) or explicitly (`--force=false`). Only options carry a `type` and
   are coerced accordingly (integers become integers, booleans become booleans).
+  Integer options may use an inclusive integer `range`; rt validates the
+  default and CLI input, shows it in help, and emits JSON Schema bounds.
 - Param and option names must be unique within a task and cannot overlap.
   `dry_run` and `dry-run` are reserved by rt. Option defaults must match their
   declared type. Invalid declarations are reported as `InvalidDeclaration`
   load errors and the invalid task is not registered.
-- `requires :rails` marks a project task that boots the Rails application
+- `t.requires :rails` marks a project task that boots the Rails application
   immediately before its block runs. Requirements are task-scoped.
 - The block receives a context: `ctx.param(:name)`, `ctx.option(:name)`,
   `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)` for output.
@@ -129,11 +136,13 @@ gem without the project having a `Gemfile`.
 # .rt/tasks/gh-release.rb
 gem "octokit", "~> 8.0"
 
-desc "Create a GitHub release"
-param :tag, required: true
-task "gh:release" do |ctx|
-  require "octokit"       # require INSIDE the task block, not at the top level
-  # ...
+task "gh:release" do |t|
+  t.desc "Create a GitHub release"
+  t.param :tag, required: true
+  t.run do |ctx|
+    require "octokit"       # require INSIDE the run block, not at the top level
+    # ...
+  end
 end
 ```
 
@@ -180,15 +189,18 @@ Use `requires :rails` when a task needs application models, configuration, or
 database connections:
 
 ```ruby
-desc "Delete inactive users"
-requires :rails
-option :days, type: :integer, default: 90, description: "inactive period"
-task "users:cleanup" do |ctx|
-  users = User.where(last_active_at: ...ctx.option(:days).days.ago)
-  ctx.say "#{users.count} users will be deleted"
-  return if ctx.dry_run?
+task "users:cleanup" do |t|
+  t.desc "Delete inactive users"
+  t.requires :rails
+  t.option :days, type: :integer, default: 90, range: 1..365,
+                  description: "inactive period"
+  t.run do |ctx|
+    users = User.where(last_active_at: ...ctx.option(:days).days.ago)
+    ctx.say "#{users.count} users will be deleted"
+    return if ctx.dry_run?
 
-  users.delete_all
+    users.delete_all
+  end
 end
 ```
 
@@ -241,7 +253,7 @@ top-level catalog shape with one tool: `rt tools --json greet`.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "tools": [
     {
       "task": "greet",

@@ -8,10 +8,12 @@ trap 'rm -rf "$root"' EXIT
 mkdir -p "$root/project/.rt/tasks" "$root/config"
 
 cat >"$root/project/.rt/tasks/greet.rb" <<'RUBY'
-desc "Greet someone by name"
-option :name, type: :string, default: "world", description: "who to greet"
-task "greet" do |ctx|
-  ctx.say "Hello, #{ctx.option(:name)}!"
+task "greet" do |t|
+  t.desc "Greet someone by name"
+  t.option :name, type: :string, default: "world", description: "who to greet"
+  t.run do |ctx|
+    ctx.say "Hello, #{ctx.option(:name)}!"
+  end
 end
 RUBY
 
@@ -35,9 +37,9 @@ ruby -rjson -e '
   help = JSON.parse(File.read(ARGV.fetch(1)))
   tools = JSON.parse(File.read(ARGV.fetch(2)))
   run = JSON.parse(File.read(ARGV.fetch(3)))
-  abort "unexpected list schema" unless list["protocol_version"] == 3 && list["tasks"][0]["name"] == "greet"
-  abort "unexpected help schema" unless help["protocol_version"] == 3 && help["task"]["name"] == "greet"
-  abort "unexpected tools schema" unless tools["schema_version"] == 2 && tools["tools"][0]["task"] == "greet"
+  abort "unexpected list schema" unless list["protocol_version"] == 4 && list["tasks"][0]["name"] == "greet"
+  abort "unexpected help schema" unless help["protocol_version"] == 4 && help["task"]["name"] == "greet"
+  abort "unexpected tools schema" unless tools["schema_version"] == 3 && tools["tools"][0]["task"] == "greet"
   abort "unexpected run result" unless run["schema_version"] == 2 && run["status"] == "success" && run["stdout"]["data"] == "Hello, release!\n"
 ' "$root/list.json" "$root/help.json" "$root/tools.json" "$root/run.json"
 

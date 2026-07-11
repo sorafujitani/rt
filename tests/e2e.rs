@@ -144,7 +144,7 @@ fn list_json_emits_only_json_on_stdout() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 3);
+    assert_eq!(value["protocol_version"], 4);
     assert!(!value["tasks"].as_array().unwrap().is_empty());
 }
 
@@ -766,7 +766,20 @@ fn help_shows_usage_params_and_options() {
         .success()
         .stdout(predicates::str::contains("rt run deploy"))
         .stdout(predicates::str::contains("environment"))
-        .stdout(predicates::str::contains("workers"));
+        .stdout(predicates::str::contains("workers"))
+        .stdout(predicates::str::contains("[range: 1..16]"));
+}
+
+#[test]
+fn run_rejects_integer_option_outside_declared_range() {
+    let staged = stage("params");
+    rt().args(["run", "deploy", "staging", "--workers", "17"])
+        .current_dir(staged.path())
+        .env_remove("RT_ROOT")
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicates::str::contains("--workers must be within 1..16"));
 }
 
 #[test]
@@ -783,7 +796,7 @@ fn help_json_emits_single_task() {
     assert_eq!(
         value,
         serde_json::json!({
-            "protocol_version": 3,
+            "protocol_version": 4,
             "task": {
                 "name": "deploy",
                 "description": "Deploy the application to an environment",
@@ -800,6 +813,8 @@ fn help_json_emits_single_task() {
                         "name": "workers",
                         "type": "integer",
                         "default": 2,
+                        "minimum": 1,
+                        "maximum": 16,
                         "description": "worker count"
                     },
                     {
@@ -842,9 +857,17 @@ fn tools_json_emits_catalog_and_filters_one_task() {
     assert!(all.stderr.is_empty());
 
     let catalog: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
-    assert_eq!(catalog["schema_version"], 2);
+    assert_eq!(catalog["schema_version"], 3);
     assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
     assert_eq!(catalog["tools"][0]["task"], "deploy");
+    assert_eq!(
+        catalog["tools"][0]["input_schema"]["properties"]["workers"]["minimum"],
+        1
+    );
+    assert_eq!(
+        catalog["tools"][0]["input_schema"]["properties"]["workers"]["maximum"],
+        16
+    );
     assert_eq!(
         catalog["tools"][0]["input_schema"]["properties"]["environment"]["enum"],
         serde_json::json!(["staging", "production"])
@@ -868,7 +891,7 @@ fn tools_json_emits_catalog_and_filters_one_task() {
     assert!(filtered.status.success());
     assert!(filtered.stderr.is_empty());
     let catalog: serde_json::Value = serde_json::from_slice(&filtered.stdout).unwrap();
-    assert_eq!(catalog["schema_version"], 2);
+    assert_eq!(catalog["schema_version"], 3);
     assert_eq!(catalog["tools"].as_array().unwrap().len(), 1);
     assert_eq!(catalog["tools"][0]["task"], "deploy");
 }
@@ -1540,7 +1563,7 @@ fn public_schema_version_is_refreshed_without_ruby() {
     std::fs::create_dir_all(&rt_dir).unwrap();
     let cache = serde_json::json!({
         "cache_format_version": 3,
-        "harness_protocol_version": 3,
+        "harness_protocol_version": 4,
         "ruby_command": "ruby [unbundled]",
         "files": {},
         "metadata": {
@@ -1560,7 +1583,7 @@ fn public_schema_version_is_refreshed_without_ruby() {
         .unwrap();
     assert!(out.status.success());
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["protocol_version"], 3);
+    assert_eq!(value["protocol_version"], 4);
     assert_eq!(value["tasks"][0]["name"], "ghost");
 }
 
@@ -1600,7 +1623,7 @@ fn invalid_declarations_are_structured_load_errors() {
     assert_eq!(tasks[0]["name"], "healthy");
 
     let errors = value["errors"].as_array().unwrap();
-    assert_eq!(errors.len(), 11);
+    assert_eq!(errors.len(), 15);
     assert!(errors
         .iter()
         .all(|error| error["class"] == "InvalidDeclaration"));
@@ -1620,6 +1643,10 @@ fn invalid_declarations_are_structured_load_errors() {
         "default must be one of",
         "required must be true or false",
         "cannot have a default",
+        "range is only supported for integer options",
+        "range must be an inclusive integer range",
+        "default must be within",
+        "run block is required",
     ] {
         assert!(
             messages.iter().any(|message| message.contains(expected)),
@@ -1670,7 +1697,7 @@ fn global_task_cannot_require_rails() {
     std::fs::create_dir_all(global.path().join("tasks")).unwrap();
     std::fs::write(
         global.path().join("tasks/rails.rb"),
-        "requires :rails\ntask(\"global_rails\") { |_ctx| }\n",
+        "task(\"global_rails\") { |t| t.requires :rails; t.run { |_ctx| } }\n",
     )
     .unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -1738,7 +1765,7 @@ fn rails_discovery_exposes_metadata_without_booting_the_application() {
         .output()
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["schema_version"], 2);
+    assert_eq!(value["schema_version"], 3);
     assert_eq!(
         value["tools"][0]["requirements"],
         serde_json::json!(["rails"])
@@ -2059,15 +2086,17 @@ fn rails_arguments_are_validated_in_the_application_bundle() {
     std::fs::write(
         staged.path().join(".rt/tasks/runtime.rb"),
         r#"
-desc "Validate under the Rails application bundle"
-if ENV.fetch("BUNDLE_GEMFILE", "").end_with?("/.rt/Gemfile")
-  param :name
-else
-  param :name, required: true
-end
-requires :rails
-task "rails:runtime" do |ctx|
-  ctx.say ctx.param(:name)
+task "rails:runtime" do |t|
+  t.desc "Validate under the Rails application bundle"
+  if ENV.fetch("BUNDLE_GEMFILE", "").end_with?("/.rt/Gemfile")
+    t.param :name
+  else
+    t.param :name, required: true
+  end
+  t.requires :rails
+  t.run do |ctx|
+    ctx.say ctx.param(:name)
+  end
 end
 "#,
     )

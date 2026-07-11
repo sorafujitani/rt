@@ -49,28 +49,31 @@ The exact JSON shapes, the full environment-variable table, and project layout d
 
 ## Author tasks
 
-Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). The DSL uses a pending-buffer model. `desc`, `param`, `option`, and `requires` describe the next `task` declaration. Copy this template:
+Put task files in `.rt/tasks/` (loaded from `.rt/tasks/**/*.rb`). Each `task` yields a builder that owns its description, inputs, requirements, and run block. Copy this template:
 
 ```ruby
 # .rt/tasks/gh-release.rb
 gem "octokit", "~> 8.0"
 
-desc "Create a GitHub release"
-param :tag, required: true, description: "tag to release"
-option :draft, type: :boolean, default: false, description: "create as draft"
-option :retries, type: :integer, default: 3, description: "API retry count"
-task "gh:release" do |ctx|
-  require "octokit"   # require INSIDE the block, never at the top level
-  ctx.say "releasing #{ctx.param(:tag)} (draft: #{ctx.option(:draft)})"
-  return if ctx.dry_run?
-  # real work here
+task "gh:release" do |t|
+  t.desc "Create a GitHub release"
+  t.param :tag, required: true, description: "tag to release"
+  t.option :draft, type: :boolean, default: false, description: "create as draft"
+  t.option :retries, type: :integer, default: 3, range: 1..10,
+                     description: "API retry count"
+  t.run do |ctx|
+    require "octokit"   # require INSIDE the run block, never at the top level
+    ctx.say "releasing #{ctx.param(:tag)} (draft: #{ctx.option(:draft)})"
+    return if ctx.dry_run?
+    # real work here
+  end
 end
 ```
 
 Rules:
 
 - `param name, required:, default:, enum:, description:` is a positional argument. Command-line values always arrive as `String`, so a non-null default must be a string. A required param cannot have a default. `enum` restricts accepted values.
-- `option name, type:, default:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
+- `option name, type:, default:, range:, description:` is a `--flag`. `type` is one of `:string`, `:integer`, `:boolean`, and the default must match that type. An integer option may declare an inclusive integer `range`; rt validates both its default and CLI values. Booleans are set by presence (`--force`) or explicitly (`--force=false`).
 - Param and option names must be unique and cannot overlap. `dry_run` and `dry-run` are reserved by rt. Invalid declarations become `InvalidDeclaration` load errors and are not registered.
 - The context API is `ctx.param(:name)`, `ctx.option(:name)`, `ctx.dry_run?`, `ctx.project_root`, and `ctx.say(message)`. `ctx.project_root` is a `Pathname` for project tasks and `nil` for global tasks. A bare `return` is a valid early exit.
 - The task name is exactly what you declare. There is no automatic namespacing from file paths. Declaring the same name twice is an error.
@@ -78,14 +81,15 @@ Rules:
 
 ## Rails applications
 
-Declare `requires :rails` immediately before a task that uses the Rails
-application:
+Declare `t.requires :rails` inside a task that uses the Rails application:
 
 ```ruby
-desc "Count users"
-requires :rails
-task "users:count" do |ctx|
-  ctx.say User.count
+task "users:count" do |t|
+  t.desc "Count users"
+  t.requires :rails
+  t.run do |ctx|
+    ctx.say User.count
+  end
 end
 ```
 
