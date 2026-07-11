@@ -89,12 +89,13 @@ task "users:count" do |ctx|
 end
 ```
 
-`list`, `help`, and `tools` expose the `rails` requirement without booting the
-application. `run` requires the project-root `Gemfile` and a complete Bundler
-environment, changes to the project root, and loads `config/environment.rb`
-before the block. Rails tasks cannot be global and cannot be declared in a file
-with top-level inline `gem` declarations. Pass the environment normally, for
-example `RAILS_ENV=test rt run --json users:count`.
+`list`, `help`, and `tools` expose the `rails` requirement without inspecting
+the project-root `Gemfile` or booting the application. `run` requires the
+project-root `Gemfile` and a complete Bundler environment, changes to the
+project root, and loads `config/environment.rb` before the block. Rails tasks
+cannot be global and cannot be declared in a file with top-level inline `gem`
+declarations. Pass the environment normally, for example
+`RAILS_ENV=test rt run --json users:count`.
 
 When replacing Rake tasks, use the full name such as `users:count` directly and
 move prerequisites other than the Rails environment into normal Ruby classes
@@ -133,10 +134,16 @@ Trust caveat: the top level of every task file executes during discovery on ever
 rt picks a Ruby in this order:
 
 1. `RT_RUBY`, if set. A path to a single Ruby executable, not a shell command line.
-2. `bundle exec ruby` when a `Gemfile` is present (in `.rt/`, or at the project root) and `bundle` is on `PATH`.
+2. `bundle exec ruby` when the task home contains a `Gemfile` and `bundle` is on `PATH`.
 3. `ruby` on `PATH`.
 
-If Bundler is missing or `bundle exec` fails, rt warns and falls back to plain `ruby`. Tasks that declare gems always run under plain Ruby regardless of a `Gemfile`. rt strips `RUBYOPT` and `RUBYLIB` from every Ruby it launches.
+The project-root `Gemfile` is resolved only when a project task runs, never for
+`list`, `help`, or `tools`.
+
+If Bundler is missing or `bundle exec` fails, rt warns and falls back to plain
+`ruby`. Tasks that declare gems always run under plain Ruby regardless of a
+`Gemfile`. rt strips `RUBYOPT` and `RUBYLIB` from every Ruby it launches, and
+plain discovery removes activation inherited from an outer `bundle exec`.
 
 Rails tasks never use the plain-Ruby fallback. A missing project `Gemfile`,
 missing Bundler, incomplete bundle, or Rails boot failure exits 74. Rails task

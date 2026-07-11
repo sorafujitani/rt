@@ -193,10 +193,12 @@ end
 ```
 
 Discovery commands (`list`, `help`, and `tools`) record the requirement but do
-not load `config/environment.rb` or run Rails initializers. `run` requires the
-project-root `Gemfile`, verifies the bundle, changes the child working directory
-to the project root, and then loads `config/environment.rb` before the task
-block. `RAILS_ENV` is inherited normally:
+not inspect the project-root `Gemfile`, load `config/environment.rb`, or run
+Rails initializers, so metadata remains available without an installed
+application bundle. `run` requires the project-root `Gemfile`, verifies the
+bundle, changes the child working directory to the project root, and then loads
+`config/environment.rb` before the task block. `RAILS_ENV` is inherited
+normally:
 
 ```sh
 RAILS_ENV=production rt run users:cleanup --dry-run
@@ -361,11 +363,15 @@ rt resolves Ruby in this order:
 1. `RT_RUBY`, if set. This must be the path to a single Ruby executable (for
    example `/usr/bin/ruby` or a `ruby-install` shim). It is not a shell command
    line — compound values like `"bundle exec ruby"` are not supported.
-2. `bundle exec ruby` (with `BUNDLE_GEMFILE` set) when a `Gemfile` is present
-   and `bundle` is on `PATH`. The `Gemfile` is looked up first inside the task
-   home (`.rt/Gemfile`, or `<config_dir>/Gemfile` for global tasks) and then at
-   the project root.
+2. `bundle exec ruby` (with `BUNDLE_GEMFILE` set) when the task home contains a
+   `Gemfile` (`.rt/Gemfile`, or `<config_dir>/Gemfile` for global tasks) and
+   `bundle` is on `PATH`.
 3. `ruby` on `PATH`.
+
+The project-root `Gemfile` is excluded from `list`, `help`, and `tools` and is
+resolved only when a project task runs. This keeps metadata discovery
+independent from the application bundle while preserving project gems during
+execution.
 
 If a `Gemfile` is present but `bundle` is not installed, rt warns and falls
 back to plain `ruby`. If `bundle exec` is installed but fails (for example when
@@ -383,6 +389,10 @@ On every path, rt strips `RUBYOPT` and `RUBYLIB` from the Ruby it launches, so a
 value inherited from the surrounding shell (common under `bundle exec`) cannot
 inject a require or a load path that breaks the harness. A deliberate `RUBYOPT`
 of your own (say `--yjit`) is dropped too.
+
+Plain-Ruby discovery also removes activation inherited from an outer
+`bundle exec` while preserving ambient `GEM_HOME` and `GEM_PATH`. This prevents
+the caller's bundle from making metadata commands depend on unrelated gems.
 
 A task that [declares gems](#declaring-gems) is the one exception to Bundler
 resolution: it always runs under plain Ruby (honoring `RT_RUBY`) in a fully
